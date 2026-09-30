@@ -666,21 +666,30 @@ bool emu_options::add_and_remove_image_options()
 		// iterate through all image devices
 		for (device_image_interface &image : image_interface_iterator(config.root_device()))
 		{
-		// MESSUI start - the MAME code through here is broken, won't save images loaded via the menu
-		// to ini file, so we use older code instead.
-			const char *cn = image.device().tag();
+			// NETPLAY: restored from plain MAME 0.210. MESSUI had this as
+			//     const char *cn = image.device().tag();
+			// with the comment "the MAME code through here is broken, won't
+			// save images loaded via the menu to ini file". That swap breaks
+			// the dedup below: the map is keyed on the DEVICE TAG while the
+			// option is NAMED from the instance name, so two devices whose
+			// tags differ but whose option names collide both get added, and
+			// add_entry asserts "it is illegal to call this method for
+			// something that already exists" (options.cpp). Release never
+			// sees it - assert compiled out, duplicate emplace is a no-op.
+			// The MESSUI feature this cost is saving menu-loaded images to
+			// ini, which an arcade-only build does not have.
+			const std::string &cannonical_name(image.cannonical_instance_name());
 
 			// erase this option from existing (so we don't purge it later)
-			existing.remove(cn);
+			existing.remove(cannonical_name);
 
 			// do we need to add this option?
-			auto iter = m_image_options_cannonical.find(cn);
+			auto iter = m_image_options_cannonical.find(cannonical_name);
 			::image_option *this_option = iter != m_image_options_cannonical.end() ? &iter->second : nullptr;
 			if (!this_option)
 			{
 				// we do - add it to both m_image_options_cannonical and m_image_options
-				auto pair = std::make_pair(cn, ::image_option(*this, cn));
-				// MESSUI end
+				auto pair = std::make_pair(cannonical_name, ::image_option(*this, image.cannonical_instance_name()));
 				this_option = &m_image_options_cannonical.emplace(std::move(pair)).first->second;
 				changed = true;
 

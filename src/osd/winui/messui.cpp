@@ -832,23 +832,7 @@ BOOL MyFillSoftwareList(int drvindex, BOOL bForce)
 	MySoftwareListClose();
 
 	// allocate the machine config, if necessary
-	// NETPLAY: skip all of this for an arcade machine. It has no user-loadable
-	// image devices and no software lists, so the work below is wasted - and it
-	// is not cheap: software_config_alloc and DriverHasSoftware each construct
-	// a whole machine_config, so this ran TWICE per list selection.
-	//
-	// It is also the only path that reaches the duplicate image-option assert
-	// in emu_options::add_and_remove_image_options (options.cpp, "it is illegal
-	// to call this method for something that already exists"), which MESSUI
-	// introduced by keying m_image_options_cannonical on device().tag() instead
-	// of cannonical_instance_name(). Release builds never see it - assert is
-	// compiled out and the duplicate emplace is a silent no-op.
-	//
-	// DriverIsArcade reads a cached bitfield; DriverHasSoftware does not, which
-	// is why the test is on the driver type and not on software presence.
-	// s_config stays null, which everything below already handles - it is the
-	// same state as drvindex < 0.
-	if (drvindex >= 0 && !DriverIsArcade(drvindex))
+	if (drvindex >= 0)
 	{
 		s_config = software_config_alloc(drvindex);
 		has_software = DriverHasSoftware(drvindex);
@@ -1040,6 +1024,13 @@ static void MessRefreshPicker(void)
 		if (!dev.user_loadable())
 			continue;
 		string opt_name = dev.instance_name(); // get name of device slot
+		// NETPLAY: core_options::value() is get_entry(name)->value() with NO
+		// null check, so looking up an option that was never registered is an
+		// access violation rather than an empty string. The device set walked
+		// here comes from a machine_config built separately from the one that
+		// registered the options, so a miss is possible. Skip those.
+		if (!o.exists(opt_name))
+			continue;
 		s = o.value(opt_name.c_str()); // get name of software in the slot
 
 		if (s[0]) // if software is loaded
@@ -1287,7 +1278,8 @@ static BOOL MView_GetOpenFileName(HWND hwndMView, const machine_config *config, 
 	string dst, opt_name = dev->instance_name();
 	windows_options o;
 	load_options(o, OPTIONS_GAME, drvindex, 1);
-	const char* s = o.value(opt_name.c_str());
+	// NETPLAY: value() has no null check - see MessRefreshPicker.
+	const char* s = o.exists(opt_name) ? o.value(opt_name.c_str()) : "";
 
 	/* Get the path to the currently mounted image */
 	util::zippath_parent(dst, s);
