@@ -28,6 +28,7 @@
 #include "messui.h"
 #include "winutf8.h"
 #include "zippath.h"
+#include <vector>      // std::vector, replacing VLAs
 
 
 //============================================================
@@ -1182,7 +1183,8 @@ static void SetupImageTypes(const machine_config *config, mess_image_type *types
 	else
 	{
 		string exts = dev->file_extensions();
-		char t1[exts.size()+1];
+		std::vector<char> t1_buf(exts.size()+1);   // was a VLA; MSVC has none
+		char *t1 = t1_buf.data();
 		strcpy(t1, dev->file_extensions());
 		char *ext = strtok(t1,",");
 		while (ext)
@@ -1293,7 +1295,8 @@ static BOOL MView_GetOpenFileName(HWND hwndMView, const machine_config *config, 
 
 	if (bResult)
 	{
-		char t2[nFilenameLength];
+		std::vector<char> t2_buf(nFilenameLength);   // was a VLA; MSVC has none
+		char *t2 = t2_buf.data();
 		wcstombs(t2, pszFilename, nFilenameLength-1); // convert wide string to a normal one
 		SetSelectedSoftware(drvindex, dev->instance_name(), t2);
 		mvmap[opt_name] = 1;
@@ -1335,7 +1338,8 @@ static BOOL MView_GetOpenItemName(HWND hwndMView, const machine_config *config, 
 	if (bResult)
 	{
 		// Get the Item name out of the full path
-		char t2[nFilenameLength];
+		std::vector<char> t2_buf(nFilenameLength);   // was a VLA; MSVC has none
+		char *t2 = t2_buf.data();
 		wcstombs(t2, pszFilename, nFilenameLength-1); // convert wide string to a normal one
 		string t3 = t2; // then convert to a c++ string so we can manipulate it
 		size_t i = t3.find(".zip"); // get rid of zip name and anything after
@@ -1388,7 +1392,8 @@ static BOOL MView_GetCreateFileName(HWND hwndMView, const machine_config *config
 
 	if (bResult)
 	{
-		char t2[nFilenameLength];
+		std::vector<char> t2_buf(nFilenameLength);   // was a VLA; MSVC has none
+		char *t2 = t2_buf.data();
 		wcstombs(t2, pszFilename, nFilenameLength-1); // convert wide string to a normal one
 		SetSelectedSoftware(drvindex, dev->instance_name(), t2);
 		mvmap[dev->instance_name()] = 1;
@@ -1886,7 +1891,8 @@ static void MView_ButtonClick(HWND hwndMView, struct MViewEntry *pEnt, HWND hwnd
 	{
 		string as, dst;
 		string t = GetRomDirs();
-		char rompath[t.size()+1];
+		std::vector<char> rompath_buf(t.size()+1);   // was a VLA; MSVC has none
+		char *rompath = rompath_buf.data();
 		strcpy(rompath, t.c_str());
 		char* sl_root = strtok(rompath, ";");
 		while (sl_root && !passes_tests)

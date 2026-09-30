@@ -190,17 +190,27 @@ Table of Contents
    So NOWERROR=1 alone leaves warnings-as-errors switched on for MSVC.
    That is a bug in this vintage, not a misunderstanding of the option.
 
-   Our workaround is a project-scoped buildoptions { "/WX-" } in
-   scripts/src/osd/winui_cfg.lua, which relaxes only osd_winui and
-   qtdbg_winui. Core MAME and the executable keep /WX, which is
-   correct - upstream 0.210 compiled clean under vs2017.
+   FIXED RATHER THAN WORKED AROUND. The "/WX" now reads
+   _OPTIONS["NOWERROR"] and "/WX-" or "/WX", so the option behaves as
+   documented. It had to be: upstream code fails on warnings under a
+   Debug build - C4701 in i386.cpp and athlon.cpp, C4390 in
+   starrider.cpp - and "upstream 0.210 compiled clean under vs2017" was
+   only ever true of Release, where the optimiser proves the
+   initialisations C4701 complains about. See upstream-edits.txt 1.4.
 
-   It relies on MSVC's last-wins behaviour for /WX versus /WX-, since
-   both land in AdditionalOptions and project scope is emitted after
-   solution scope. MEASURED in the generated osd_winui.vcxproj: /WX is
-   token 2 of AdditionalOptions and /WX- is token 73, so /WX- wins.
-   emu.vcxproj contains no /WX- at all, so core MAME keeps
-   warnings-as-errors as intended. [verified]
+   The project-scoped buildoptions { "/WX-" } in winui_cfg.lua stays. It
+   is what protects the winui sources for anyone building without
+   NOWERROR=1.
+
+   The last-wins behaviour that workaround relied on was measured and
+   held: before the fix, /WX was token 2 of osd_winui's
+   AdditionalOptions and /WX- was token 73. [verified] With NOWERROR=1
+   the question is moot - no /WX is emitted anywhere.
+
+   MSBuild emits its own /WX- from the default
+   TreatWarningAsError=false, so "D9025: overriding '/WX-' with '/WX'"
+   appears whenever genie also emits /WX. Noise, not a symptom.
+   [verified]
 
 3.3.  The winui entry point resolves to the wrong main
 
@@ -248,6 +258,19 @@ Table of Contents
    Same file, same function: a leading + force-adds an individual
    driver and a leading - removes one, which is how per-game exceptions
    are expressed. See coinop-subtarget.txt.
+
+3.4a.  Variable-length arrays in winui
+
+   18 of them, and the largest single class of MSVC breakage in this
+   OSD. A VLA is a GCC extension, not C++, and each one becomes C2131
+   plus a cascade of dependent errors. Full account and the transform
+   used: upstream-edits.txt 1.5.
+
+   Worth recording as a lesson about static reads: an earlier pass over
+   these sources reported them "clean of GCC extensions" after checking
+   for __attribute__, typeof, designated initialisers and __builtin_*.
+   It never checked for VLAs, which were the actual problem. A grep for
+   the constructs you thought of is not a survey.
 
 3.5.  msgfmt.py is broken on Python 3.9 and later
 

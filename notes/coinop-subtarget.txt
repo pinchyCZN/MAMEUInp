@@ -91,9 +91,18 @@ Table of Contents
 
    which names main.lua rather than the subtarget script, so it does not
    point at the actual mistake. Lua resolves the name at call time, so
-   there is no parse error and no warning. gen_coinop.py renames both
-   and asserts both exist plus no stale mame_arcade reference remains.
-   [verified]
+   there is no parse error and no warning.
+
+   AND linkProjects NAMES EVERY GROUP AS A LIBRARY. Excising the
+   pinball group from createProjects without also removing "pinball"
+   from that links list generates cleanly and then dies at link time:
+
+       LINK : fatal error LNK1104: cannot open file 'pinball.lib'
+
+   [verified] Same defect family as the rename: removing a group is
+   three edits, not one. gen_coinop.py now renames both entry points,
+   drops the library link, and asserts all three - both functions
+   present, no stale mame_arcade, no stale pinball link.
 
    SO BOTH FILES ARE REQUIRED, AND THEY DO DIFFERENT JOBS:
 

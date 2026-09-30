@@ -383,7 +383,8 @@ static LPBITS GetShowFolderFlags(LPBITS bits)
 		return bits;
 
 	extern const FOLDERDATA g_folderData[];
-	char s[val.size()+1];
+	std::vector<char> s_buf(val.size()+1);   // was a VLA; MSVC has none
+	char *s = s_buf.data();
 	snprintf(s, val.size()+1, "%s", val.c_str());
 	char *token = strtok(s, ",");
 	int j;
@@ -761,7 +762,8 @@ const string GetDatsDir(void)
 
 void SetDatsDir(const char *path)
 {
-	char t1[strlen(path)+1];
+	std::vector<char> t1_buf(strlen(path)+1);   // was a VLA; MSVC has none
+	char *t1 = t1_buf.data();
 	strcpy(t1, path);
 	settings.setter(MUIOPTION_DATS_DIRECTORY, path);
 	mewui.set_value(OPTION_HISTORY_PATH, t1, OPTION_PRIORITY_CMDLINE);

@@ -95,6 +95,11 @@ def build(drop):
         m = re.search(r'src/mame/drivers/([A-Za-z0-9_]+\.cpp)"', l)
         if m and m.group(1) in drop:
             continue
+        # linkProjects_mame_* names every group as a library. Excising the
+        # pinball group without this leaves links { "pinball" } behind and
+        # the build dies at LNK1104: cannot open file 'pinball.lib'.
+        if l.strip() == '"pinball",':
+            continue
         kept.append(l)
     # BOTH entry points must be renamed. main.lua calls
     # createProjects_mame_<subtarget> AND linkProjects_mame_<subtarget>;
@@ -139,6 +144,7 @@ def main():
     for fn in ("createProjects_mame_coinop", "linkProjects_mame_coinop"):
         assert ("function %s(" % fn) in lua, "missing entry point: " + fn
     assert "mame_arcade" not in lua, "stale mame_arcade reference remains"
+    assert '"pinball",' not in lua, "stale pinball library link remains"
     n = len([l for l in flt.split(chr(10))
              if re.match(r"^[a-z0-9_]+\.cpp$", l.strip())])
     print("coinop.flt: %d driver entries" % n)

@@ -26,6 +26,9 @@ Table of Contents
       1.1. Why each one
       1.2. Two things deliberately NOT changed
       1.3. .gitignore is deny-all, so new directories need whitelisting
+      1.4. NOWERROR did not work, so we made it work
+      1.5. Variable-length arrays - 18 of them
+      1.6. A const that was always wrong
    2. Edits: netplay
    3. Files we added
    4. Open questions
@@ -58,6 +61,22 @@ Table of Contents
    +----+------------------------------+------------------------------+
    |  5 | .gitignore                   | whitelist our top-level      |
    |    |                              | directories - see 1.3        |
+   +----+------------------------------+------------------------------+
+   |  6 | scripts/genie.lua            | make the raw "/WX" honour    |
+   |    |                              | NOWERROR - see 1.4           |
+   +----+------------------------------+------------------------------+
+   |  7 | src/osd/winui/history.cpp    | 18 variable-length arrays    |
+   |    | game_opts.h ini_opts.h       | replaced with std::vector,   |
+   |    | ui_opts.h messui.cpp         | plus <vector> where the file |
+   |    | mui_opts.cpp treeview.cpp    | did not already reach it -   |
+   |    | winui.cpp                    | see 1.5                      |
+   +----+------------------------------+------------------------------+
+   |  8 | src/osd/winui/treeview.cpp   | add #include <io.h> for      |
+   |    |                              | _findfirst/_finddata_t/      |
+   |    |                              | _A_SUBDIR                    |
+   +----+------------------------------+------------------------------+
+   |  9 | src/osd/winui/properties.cpp | root is char*, not const     |
+   |    |                              | char* - see 1.6              |
    +----+------------------------------+------------------------------+
 
 1.1.  Why each one
@@ -117,6 +136,75 @@ Table of Contents
    an ignored directory is simply absent from the output, not flagged.
    Adding a top-level directory here without a matching ! line loses
    the work at the next clone.
+
+1.4.  NOWERROR did not work, so we made it work
+
+   scripts/genie.lua carried an unconditional "/WX" in buildoptions for
+   vs20*, which is why NOWERROR=1 left warnings-as-errors switched on
+   (1.1 item 3 and build-config.txt 3.2). With a real build attempted it
+   stopped being a curiosity: upstream code failed on warnings that the
+   option was supposed to demote.
+
+       src/devices/cpu/i386/i386.cpp    C4701 potentially uninitialised
+       src/devices/cpu/i386/athlon.cpp  C4701
+       src/mame/drivers/starrider.cpp   C4390 empty controlled statement
+
+   [verified: Debug Win32 build output] All three are pre-existing
+   upstream code, and C4701 is a Debug-only diagnosis - the optimiser
+   proves initialisation in Release, so a Release build would not have
+   shown it.
+
+   The "/WX" is now
+       _OPTIONS["NOWERROR"] and "/WX-" or "/WX"
+   which is what the documented option always claimed to do. The
+   project-scoped /WX- in winui_cfg.lua stays: it is what protects the
+   winui sources when somebody builds WITHOUT NOWERROR=1.
+
+   A cosmetic consequence worth not chasing: MSBuild emits its own
+   /WX- from the default TreatWarningAsError=false, so the compiler
+   reports "D9025: overriding '/WX-' with '/WX'" whenever both are
+   present. That warning is noise, not a symptom. [verified]
+
+1.5.  Variable-length arrays - 18 of them
+
+   THE LARGEST SINGLE CLASS OF MSVC BREAKAGE IN winui, and the one a
+   static read missed. VLAs are a GCC extension and not C++:
+
+       char s[file_line.length()+1];
+       char t1[strlen(path)+1];
+       char source_file[temp.size()+1], tmp[2048];
+
+   Each becomes MSVC C2131, "expression did not evaluate to a
+   constant", and each takes dependent statements down with it - a
+   later s[4] = 0 becomes C3863 "array type is not assignable", and a
+   call passing the array becomes an ambiguous-overload error. So the
+   18 declarations accounted for roughly 25 reported errors. [verified]
+
+   The transform keeps the variable usable as char* so no dependent
+   line changes:
+
+       std::vector<char> s_buf(EXPR);
+       char *s = s_buf.data();
+
+   One site, history.cpp, declared a VLA and a fixed array in one
+   comma-separated statement and had to be split by hand.
+
+   Sizing semantics are preserved exactly, including where they were
+   already questionable: treeview.cpp indexes s[4] on a buffer sized
+   strlen(year)+1. That was true of the VLA too. Not ours to change.
+
+1.6.  A const that was always wrong
+
+   properties.cpp declared
+
+       const char *root = win_utf8_from_wstring(FindFileData.cFileName);
+
+   then took strrchr(root, '.') into a char* and wrote through it with
+   *ext = 0. win_utf8_from_wstring is defined in that same file and
+   returns char*, so the const was never right; MinGW tolerated it
+   because its <string.h> declares only the C strrchr returning char*,
+   while C++ <cstring> provides the const overload that MSVC correctly
+   selected. [verified]
 
 1.2.  Two things deliberately NOT changed
 

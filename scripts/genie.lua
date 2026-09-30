@@ -1331,7 +1331,10 @@ if _OPTIONS["vs"]==nil or not (string.startswith(_OPTIONS["vs"], "winstore8") or
 end
 
 		buildoptions {
-			"/WX",     -- Treats all compiler warnings as errors.
+			-- NETPLAY: "/WX" was unconditional here, so NOWERROR=1 dropped
+			-- flags{"FatalWarnings"} above and left this behind - the option
+			-- did not do what it says for MSVC. Guarded to match.
+			_OPTIONS["NOWERROR"] and "/WX-" or "/WX",
 			"/wd4025", -- warning C4025: 'number' : based pointer passed to function with variable arguments: parameter number
 			"/wd4003", -- warning C4003: not enough actual parameters for macro 'xxx'
 			"/wd4018", -- warning C4018: 'x' : signed/unsigned mismatch

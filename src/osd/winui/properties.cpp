@@ -199,6 +199,7 @@ static BOOL DirListPopulateControl(datamap *map, HWND dialog, HWND control, wind
 static BOOL RamPopulateControl(datamap *map, HWND dialog, HWND control, windows_options *opts, const char *option_name);
 extern BOOL BrowseForDirectory(HWND hwnd, LPCTSTR pStartDir, TCHAR* pResult);
 //static BOOL g_bModifiedSoftwarePaths = false;
+BOOL g_bModifiedSoftwarePaths = FALSE;   // NETPLAY: the one definition
 #endif
 
 /**************************************************************
@@ -2042,7 +2043,7 @@ static BOOL DefaultInputPopulateControl(datamap *map, HWND dialog, HWND control,
 		while (FindNextFile (hFind, &FindFileData) != 0)
 		{
 			// copy the filename
-			const char *root = win_utf8_from_wstring(FindFileData.cFileName);
+			char *root = win_utf8_from_wstring(FindFileData.cFileName);
 			// find the extension
 			char *ext = strrchr(root, '.');
 

@@ -70,7 +70,10 @@ HANDLE win_find_first_file_utf8(const char* filename, LPWIN32_FIND_DATA findfile
  //  wstring_from_utf8
  //============================================================
  
-WCHAR *ui_wstring_from_utf8(const char *utf8string)
+// NETPLAY: inline - this header DEFINES the function, so every TU that
+// includes it emits a copy (LNK2005 under MSVC). MinGW hid this behind
+// -Wl,--allow-multiple-definition in winui.lua.
+inline WCHAR *ui_wstring_from_utf8(const char *utf8string)
 {
 	int char_count;
 	WCHAR *result;
@@ -84,7 +87,10 @@ WCHAR *ui_wstring_from_utf8(const char *utf8string)
 	return result;
 }
 
-char *ui_utf8_from_wstring(const WCHAR *wstring)
+// NETPLAY: inline - this header DEFINES the function, so every TU that
+// includes it emits a copy (LNK2005 under MSVC). MinGW hid this behind
+// -Wl,--allow-multiple-definition in winui.lua.
+inline char *ui_utf8_from_wstring(const WCHAR *wstring)
 {
 	int char_count;
 	char *result;

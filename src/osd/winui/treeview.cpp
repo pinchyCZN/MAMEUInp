@@ -18,6 +18,7 @@
 
 #ifdef _MSC_VER
 #include <direct.h>
+#include <io.h>        // _findfirst/_finddata_t/_A_SUBDIR (MSVC)
 #endif
 #include <tchar.h>
 
@@ -1257,7 +1258,8 @@ void CreateYearFolders(int parent_index)
 
 	for (jj = 0; jj < nGames; jj++)
 	{
-		char s[strlen(driver_list::driver(jj).year)+1];
+		std::vector<char> s_buf(strlen(driver_list::driver(jj).year)+1);   // was a VLA; MSVC has none
+		char *s = s_buf.data();
 		strcpy(s,driver_list::driver(jj).year);
 
 		if (s[0] == '\0' || s[0] == '?')
@@ -2492,7 +2494,8 @@ int GetTreeViewIconIndex(int icon_id)
 static void SaveExternalFolders(int parent_index, const char *fname)
 {
 	string val = GetFolderDir();
-	char s[val.size()+1];
+	std::vector<char> s_buf(val.size()+1);   // was a VLA; MSVC has none
+	char *s = s_buf.data();
 	strcpy(s, val.c_str());
 	char *fdir = strtok(s, ";"); // get first dir
 

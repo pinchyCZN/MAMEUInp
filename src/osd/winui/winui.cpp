@@ -4465,7 +4465,8 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 				string t2 = GetGameHistory(nGame);
 				std::ofstream outfile (filename, std::ios::out | std::ios::trunc);
 				size_t size = t2.size();
-				char t1[size+1];
+				std::vector<char> t1_buf(size+1);   // was a VLA; MSVC has none
+				char *t1 = t1_buf.data();
 				strcpy(t1, t2.c_str());
 				outfile.write(t1, size);
 				outfile.close();

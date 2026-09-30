@@ -24,7 +24,13 @@ namespace plib {
 	struct sizeabs
 	{
 		static constexpr std::size_t ABS() { return (SIZE < 0) ? static_cast<std::size_t>(0 - SIZE) : static_cast<std::size_t>(SIZE); }
-		using container = typename std::array<FT, ABS()> ;
+		// NETPLAY: was std::array<FT, ABS()>. MSVC will not accept a call to a
+		// static constexpr member function as a constant expression inside the
+		// class that declares it (C2975), so the expression is inlined here.
+		// ABS() itself stays - gmres.h and line 57 below call it with parens.
+		using container = typename std::array<FT,
+			(SIZE < 0) ? static_cast<std::size_t>(0 - SIZE)
+			           : static_cast<std::size_t>(SIZE)> ;
 	};
 
 	template <typename FT>

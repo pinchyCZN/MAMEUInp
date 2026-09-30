@@ -5,6 +5,8 @@
 #ifndef WINUI_GAMEOPTS_H
 #define WINUI_GAMEOPTS_H
 
+#include <vector>      // std::vector, replacing VLAs
+
 class winui_game_options
 {
 	uint32_t m_total;
@@ -71,7 +73,8 @@ class winui_game_options
 		if (file_line.empty())
 			return true;
 
-		char s1[file_line.length()+1];
+		std::vector<char> s1_buf(file_line.length()+1);   // was a VLA; MSVC has none
+		char *s1 = s1_buf.data();
 		strcpy(s1, file_line.c_str());
 
 		// check that totals match
@@ -100,7 +103,8 @@ class winui_game_options
 		{
 			if (is_ready)
 			{
-				char s[file_line.length()+1];
+				std::vector<char> s_buf(file_line.length()+1);   // was a VLA; MSVC has none
+				char *s = s_buf.data();
 				strcpy(s, file_line.c_str());
 
 				const char* name = strtok(s, "\t");  // get driver name
@@ -355,7 +359,8 @@ public:
 
 		std::ofstream outfile (filename, std::ios::out | std::ios::trunc);
 		size_t size = inistring.size();
-		char t1[size+1];
+		std::vector<char> t1_buf(size+1);   // was a VLA; MSVC has none
+		char *t1 = t1_buf.data();
 		strcpy(t1, inistring.c_str());
 		outfile.write(t1, size);
 		outfile.close();

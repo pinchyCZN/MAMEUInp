@@ -5,6 +5,8 @@
 #ifndef WINUI_INIOPTS_H
 #define WINUI_INIOPTS_H
 
+#include <vector>      // std::vector, replacing VLAs
+
 typedef struct
 {
 	std::string   name;
@@ -336,7 +338,8 @@ class winui_ini_options
 		{
 			if (is_ready)
 			{
-				char s[file_line.length()+1];
+				std::vector<char> s_buf(file_line.length()+1);   // was a VLA; MSVC has none
+				char *s = s_buf.data();
 				strcpy(s, file_line.c_str());
 
 				const char* name = strtok(s, "\t");  // get adjustment name
@@ -388,7 +391,8 @@ public:
 
 		std::ofstream outfile (filename, std::ios::out | std::ios::trunc);
 		size_t size = inistring.size();
-		char t1[size+1];
+		std::vector<char> t1_buf(size+1);   // was a VLA; MSVC has none
+		char *t1 = t1_buf.data();
 		strcpy(t1, inistring.c_str());
 		outfile.write(t1, size);
 		outfile.close();

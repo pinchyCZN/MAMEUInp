@@ -236,6 +236,16 @@ project ("osd_" .. _OPTIONS["osd"])
 		MAME_DIR .. "src/osd/winui/tabview.cpp",
 		MAME_DIR .. "src/osd/winui/treeview.cpp",
 		MAME_DIR .. "src/osd/winui/winui.cpp",
+		-- NETPLAY: winui.cpp calls into these unconditionally - there is not a
+		-- single #ifdef MESS in it, and the call sites even carry
+		-- "// messui.cpp" comments - but upstream winui.lua never listed them.
+		-- Without them OSD=winui cannot link: 11 unresolved externals
+		-- (InitMessPicker, MessUpdateSoftwareList, MView_RegisterClass,
+		-- g_szSelectedItem, ...). messui.lua has listed them all along.
+		MAME_DIR .. "src/osd/winui/messui.cpp",
+		MAME_DIR .. "src/osd/winui/softwarelist.cpp",
+		MAME_DIR .. "src/osd/winui/softwarepicker.cpp",
+		MAME_DIR .. "src/osd/winui/swconfig.cpp",
 	}
 
 project ("ocore_" .. _OPTIONS["osd"])

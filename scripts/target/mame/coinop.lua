@@ -887,7 +887,6 @@ function linkProjects_mame_coinop(_target, _subtarget)
 		"yunsung",
 		"zaccaria",
 		"misc",
-		"pinball",
 		"shared",
 	}
 end

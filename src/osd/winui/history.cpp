@@ -131,7 +131,8 @@ static bool create_index(std::ifstream &fp, int filenum)
 		{
 			// now start by removing all spaces
 			file_line.erase(remove_if(file_line.begin(), file_line.end(), ::isspace), file_line.end());
-			char s[file_line.length()+1];
+			std::vector<char> s_buf(file_line.length()+1);   // was a VLA; MSVC has none
+			char *s = s_buf.data();
 			strcpy(s, file_line.c_str());
 
 			const char* first = strtok(s, "=");  // get first part of key
@@ -541,7 +542,9 @@ std::string load_driver_geninfo(const game_driver *drv, int drvindex)
 	}
 
 	std::string temp = core_filename_extract_base(drv->type.source(), false);
-	char source_file[temp.size()+1], tmp[2048];
+	std::vector<char> source_file_buf(temp.size()+1);   // was a VLA
+	char *source_file = source_file_buf.data();
+	char tmp[2048];
 	strcpy(source_file, temp.c_str());
 	snprintf(tmp, WINUI_ARRAY_LENGTH(tmp), "\nGENERAL SOURCE INFO: %s\n", temp.c_str());
 	buffer.append(tmp);
@@ -596,7 +599,8 @@ char * GetGameHistory(int driver_index, std::string software)
 	{
 		// Get the path to dat files
 		std::string t = GetDatsDir();
-		char buf[t.size()+1];
+		std::vector<char> buf_buf(t.size()+1);   // was a VLA; MSVC has none
+		char *buf = buf_buf.data();
 		strcpy(buf, t.c_str());
 		// only want first path
 		const char* datsdir = strtok(buf, ";");
@@ -639,7 +643,8 @@ char * GetGameHistory(int driver_index)
 	if (validate_datfiles())
 	{
 		std::string t = GetDatsDir();
-		char buf[t.size()+1];
+		std::vector<char> buf_buf(t.size()+1);   // was a VLA; MSVC has none
+		char *buf = buf_buf.data();
 		strcpy(buf, t.c_str());
 		// only want first path
 		const char* datsdir = strtok(buf, ";");

@@ -651,7 +651,13 @@ namespace netlist
 			}
 
 			void push_to_queue(netlist_time delay) NL_NOEXCEPT;
-			bool is_queued() const noexcept { return m_in_queue == queue_status::QUEUED; }
+			// NETPLAY: the static_cast is required. MSVC will not reach the
+			// built-in operator== for a SCOPED enum through state_var's
+			// conversion operator (C2676). Do NOT "fix" this by adding
+			// operator== to state_var - that is ambiguous for integral T and
+			// breaks nld_7497, nld_74123, nld_74192, nld_74193 and nld_9310.
+			bool is_queued() const noexcept
+			{ return static_cast<queue_status>(m_in_queue) == queue_status::QUEUED; }
 
 			template <bool KEEP_STATS>
 			void update_devs() NL_NOEXCEPT;
@@ -1705,7 +1711,7 @@ namespace netlist
 		{
 			m_list_active.push_front(&term);
 			railterminal().device().do_inc_active();
-			if (m_in_queue == queue_status::DELAYED_DUE_TO_INACTIVE)
+			if (static_cast<queue_status>(m_in_queue) == queue_status::DELAYED_DUE_TO_INACTIVE)   // NETPLAY: see is_queued()
 			{
 				if (m_next_scheduled_time > exec().time())
 				{
