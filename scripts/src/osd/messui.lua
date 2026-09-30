@@ -24,6 +24,13 @@ function maintargetosdoptions(_target,_subtarget)
 			"-lmingw32",
 			"-Wl,--allow-multiple-definition",
 		}
+	configuration { "vs*" }
+		flags {
+			"WinMain",                      -- suppress genie's mainCRTStartup EntryPointSymbol
+		}
+		linkoptions {
+			"/ENTRY:wWinMainCRTStartup",    -- real entry is wWinMain() in winui/mui_main.cpp
+		}
 
 	configuration { "x64", "Release" }
 		targetsuffix "ui64"
@@ -173,7 +180,6 @@ project ("osd_" .. _OPTIONS["osd"])
 		MAME_DIR .. "src/osd/osdepend.h",
 --		MAME_DIR .. "src/osd/windows/winmenu.cpp",
 		MAME_DIR .. "src/osd/winui/newui.cpp",
-		MAME_DIR .. "src/osd/windows/winmain.cpp",
 		MAME_DIR .. "src/osd/modules/debugger/win/consolewininfo.cpp",
 		MAME_DIR .. "src/osd/modules/debugger/win/consolewininfo.h",
 		MAME_DIR .. "src/osd/modules/debugger/win/debugbaseinfo.cpp",

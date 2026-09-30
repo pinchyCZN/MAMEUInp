@@ -14,6 +14,9 @@ configuration { "vs*" }
 	flags {
 		"Unicode",
 	}
+	buildoptions {
+		"/WX-",   -- winui has never been built with MSVC; genie.lua sets /WX globally
+	}
 
 configuration { }
 

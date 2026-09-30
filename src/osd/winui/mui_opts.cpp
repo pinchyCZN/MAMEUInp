@@ -12,6 +12,7 @@
 
 // standard windows headers
 #include <windows.h>
+#include <malloc.h>  // alloca (MSVC)
 #include <windowsx.h>
 
 // standard C headers

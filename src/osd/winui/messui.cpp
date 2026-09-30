@@ -8,6 +8,7 @@
 
 // standard windows headers
 #include <windows.h>
+#include <malloc.h>  // alloca (MSVC)
 #include <commdlg.h>
 #include <wingdi.h>
 #include <winuser.h>
