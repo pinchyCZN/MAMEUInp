@@ -832,7 +832,23 @@ BOOL MyFillSoftwareList(int drvindex, BOOL bForce)
 	MySoftwareListClose();
 
 	// allocate the machine config, if necessary
-	if (drvindex >= 0)
+	// NETPLAY: skip all of this for an arcade machine. It has no user-loadable
+	// image devices and no software lists, so the work below is wasted - and it
+	// is not cheap: software_config_alloc and DriverHasSoftware each construct
+	// a whole machine_config, so this ran TWICE per list selection.
+	//
+	// It is also the only path that reaches the duplicate image-option assert
+	// in emu_options::add_and_remove_image_options (options.cpp, "it is illegal
+	// to call this method for something that already exists"), which MESSUI
+	// introduced by keying m_image_options_cannonical on device().tag() instead
+	// of cannonical_instance_name(). Release builds never see it - assert is
+	// compiled out and the duplicate emplace is a silent no-op.
+	//
+	// DriverIsArcade reads a cached bitfield; DriverHasSoftware does not, which
+	// is why the test is on the driver type and not on software presence.
+	// s_config stays null, which everything below already handles - it is the
+	// same state as drvindex < 0.
+	if (drvindex >= 0 && !DriverIsArcade(drvindex))
 	{
 		s_config = software_config_alloc(drvindex);
 		has_software = DriverHasSoftware(drvindex);

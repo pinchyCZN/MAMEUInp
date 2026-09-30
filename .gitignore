@@ -46,6 +46,8 @@
 !/notes/
 !/tools/
 !/server/
+!/mame.ini
+!/useroptions.mak
 /.journal.db
 tools/__pycache__/
 /.idea
