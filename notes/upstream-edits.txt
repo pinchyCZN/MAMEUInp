@@ -62,30 +62,17 @@ Table of Contents
 
 1.1.  Why each one
 
-   1. Entry point. genie emits
-      <EntryPointSymbol>mainCRTStartup</EntryPointSymbol> when a
-      project is an Application with neither the WinMain nor the
-      Unicode flag set. The main executable project gets neither:
-      scripts/src/main.lua sets kind "ConsoleApp" (overridden to
-      WindowedApp by maintargetosdoptions), and flags { "Unicode" } is
-      set only in winui_cfg.lua, which is dofile'd by the osd_winui and
-      qtdbg_winui static libs and never by the executable. [verified]
+   1. Entry point. genie resolves the executable to mainCRTStartup,
+      which finds stock MAME's main() rather than MAMEUI's wWinMain.
+      Setting flags { "WinMain" } suppresses genie's EntryPointSymbol and
+      the /ENTRY selects the wide entry; both are needed, because the
+      flag alone leaves MSVC's WinMainCRTStartup default.
 
-      mainCRTStartup resolves main() in src/osd/windows/winmain.cpp -
-      stock MAME. MAMEUI's real entry is wWinMain in
-      src/osd/winui/mui_main.cpp, calling MameUIMain in winui.cpp.
-      [verified]
-
-      THIS LINKS CLEAN EITHER WAY. The symptom of getting it wrong is a
+      IT LINKS CLEAN EITHER WAY. The symptom of getting this wrong is a
       build that runs as plain MAME with no frontend, not an error.
       That is why it is first on the list.
 
-      flags { "WinMain" } alone is not enough: it only suppresses
-      genie's EntryPointSymbol, leaving MSVC's default for
-      /SUBSYSTEM:WINDOWS, which is WinMainCRTStartup and wants ANSI
-      WinMain. The /ENTRY is what selects the wide entry. Setting both
-      means exactly one /ENTRY reaches the linker rather than two
-      resolved by ordering. [inferred]
+      Full mechanism and evidence: build-config.txt 3.3.
 
    2. Duplicate source. src/osd/windows/winmain.cpp appeared twice in
       the osd_winui files list. Under GNU make both entries name the
@@ -94,22 +81,15 @@ Table of Contents
       A .vcxproj containing one source twice gives MSB8027 and two
       compilations racing for one object path. [verified]
 
-   3. Warnings as errors. scripts/genie.lua sets a raw "/WX" in
-      buildoptions inside configuration { "vs20*" }, and that block is
-      NOT guarded by the NOWERROR option - NOWERROR only drops
-      flags { "FatalWarnings" } a few hundred lines earlier. So
-      NOWERROR=1 does not disable warnings-as-errors under MSVC.
-      [verified]
+   3. Warnings as errors. NOWERROR=1 does not disable /WX under MSVC
+      in this vintage, so warnings-as-errors survives the option that
+      is supposed to turn it off. The /WX- is project-scoped to
+      winui_cfg.lua, relaxing only osd_winui and qtdbg_winui; core MAME
+      and the executable keep /WX, which is right because upstream
+      0.210 compiled clean under vs2017.
 
-      The /WX- is project-scoped to winui_cfg.lua, so it relaxes only
-      the osd_winui and qtdbg_winui projects. Core MAME and the
-      executable keep /WX, which is correct: upstream 0.210 compiled
-      clean under vs2017.
-
-      This relies on MSVC's last-wins behaviour for /WX vs /WX-,
-      because both land in AdditionalOptions and project scope is
-      emitted after solution scope. [inferred] Confirm in the
-      generated osd_winui.vcxproj.
+      Full mechanism, evidence, and the ordering caveat:
+      build-config.txt 3.2.
 
    4. alloca. MSVC declares alloca in <malloc.h>, and <windows.h> does
       not pull it in. dirwatch.cpp includes only <windows.h> and local
@@ -200,8 +180,6 @@ Table of Contents
 
 4.  Open questions
 
-   o Whether the /WX- ordering assumption in 1.1(3) actually holds in
-     the generated vcxproj. Unverified until we generate.
    o Whether the VS2017 15.7.6 toolset pin is actually required at
      0.210 or only for later tags. MAME's own docs for this release say
      newer 2017 toolsets have bugs; not tested here. [upstream]

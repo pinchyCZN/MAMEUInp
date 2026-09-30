@@ -1,0 +1,240 @@
+MAMEUI Netplay                                        Analysis Note
+
+
+                 WHAT PERTURBS EMULATED STATE
+
+
+Abstract
+
+   MAME 0.210 is deterministic for a fixed binary, configuration and
+   ROM set. This document is the list of things that break that
+   property, with the evidence for each, because the whole netplay
+   design rests on two instances producing bit-identical state from the
+   same input stream.
+
+   A desync does not announce itself at the call site. It appears many
+   frames later as a divergence with no obvious cause, which is why
+   every entry here cites code rather than recollection.
+
+   Read with CLAUDE.md rule 3. Nothing goes in this document that has
+   not been read out of this tree.
+
+Table of Contents
+
+   1. Why MAME is deterministic at all
+   2. Host entropy: where it does and does not enter
+      2.1. The RNG is seeded, not random
+      2.2. Wall-clock time reaches the machine through one door
+      2.3. osd_ticks: three devices, none of them arcade
+   3. Frameskip is NOT presentation-only
+   4. Configuration that must match between peers
+   5. Settings that are safe to differ
+   6. Open questions
+
+1.  Why MAME is deterministic at all
+
+   The proof is that -record and -playback work. An .inp file is a
+   stream of per-frame port values; replaying it reproduces a session
+   exactly. That mechanism would be useless if emulation were not
+   reproducible, and it is a first-class, long-standing MAME feature.
+   [verified: ioport.cpp, record_frame/playback_frame and
+   record_port/playback_port]
+
+   "Modern MAME is not deterministic" is false as stated. What is true
+   is that determinism holds only for a FIXED binary, configuration and
+   ROM set, and that the list in sections 2 to 4 is what fixes it.
+
+   The practical consequence for us: hooking at the same layer .inp
+   uses inherits the same guarantee. See netplay-hooks.txt.
+
+2.  Host entropy: where it does and does not enter
+
+2.1.  The RNG is seeded, not random
+
+   running_machine::rand() is a linear congruential generator with a
+   compile-time initial seed:
+
+       m_rand_seed(0x9d14abd7)                     constructor
+       m_rand_seed = 1664525 * m_rand_seed + 1013904223
+
+   and the seed is itself part of the savestate:
+
+       save().save_item(NAME(m_rand_seed));
+
+   [verified: machine.cpp, running_machine::running_machine,
+   running_machine::rand, and the save registration in the same file]
+
+   So machine().rand() needs no special handling. It is deterministic
+   across peers and it survives a savestate round trip.
+
+2.2.  Wall-clock time reaches the machine through one door
+
+   Two accessors, both derived from a single stored base time:
+
+       base_datetime(systime)     -> systime.set(m_base_time)
+       current_datetime(systime)  -> systime.set(m_base_time
+                                                + this->time().seconds())
+
+   [verified: machine.cpp, running_machine::base_datetime and
+   running_machine::current_datetime]
+
+   current_datetime is base plus emulated elapsed time, so it is a pure
+   function of m_base_time and the machine clock. Every RTC device in
+   the tree that wants the date goes through one of these two.
+
+   THEREFORE m_base_time IS THE WHOLE RTC HAZARD. Sync it and every
+   real-time-clock chip becomes deterministic; leave it and any driver
+   with an RTC diverges immediately.
+
+   MAME already solves this for .inp: record_init captures the host
+   time via machine().base_datetime() into the .inp header, and
+   playback_init reads it back and returns it, with
+   ioport_manager::initialize passing the value up as its return.
+   [verified: ioport.cpp, record_init / playback_init /
+   ioport_manager::initialize]
+
+   Our server chooses the session base time and broadcasts it at join.
+   The mechanism to apply it already exists; we are substituting a
+   network source for the .inp header.
+
+   Devices that consume host date/time, for reference - these are the
+   drivers to be careful with, not a list of problems:
+
+       machine/mc146818.cpp    machine/rtc65271.cpp
+       machine/ds1315.cpp      machine/rtc9701.cpp
+       machine/ds1386.cpp      machine/s3520cf.cpp
+       machine/dp8573.cpp      machine/mm58274c.cpp
+       machine/mccs1850.cpp    machine/smpc.cpp
+       machine/laserdsc.cpp    bus/snes/spc7110.cpp
+
+   [verified: grep for system_time across src/devices]
+
+2.3.  osd_ticks: three devices, none of them arcade
+
+   osd_ticks() is real host time and does NOT go through m_base_time.
+   Any device using it is nondeterministic by construction.
+
+   In the whole tree it is called by three devices and one driver:
+
+       bus/isa/omti8621.cpp    ISA disk controller
+       bus/isa/sc499.cpp       ISA tape drive
+       sound/esqpump.cpp       Ensoniq sound pump
+       drivers/apollo.cpp      Apollo workstation
+
+   [verified: grep osd_ticks() across src/devices and src/mame/drivers]
+
+   None of these appears in any arcade driver we care about. This is
+   worth knowing rather than worth fixing: if a future netplay target
+   pulls in one of these devices, it cannot be made deterministic
+   without changing the device.
+
+3.  Frameskip is NOT presentation-only
+
+   THIS IS THE TRAP IN THIS DOCUMENT. The obvious and wrong assumption
+   is that frameskip affects only what gets drawn. It does not.
+
+   video_manager::skip_this_frame() is public and four driver families
+   branch on it. In three of them the branch writes save-stated driver
+   state:
+
+   +-------------------+---------------------------------------------+
+   | Driver family     | What the skipped branch does                |
+   +===================+=============================================+
+   | video/cave.cpp    | m_spriteram_bank[chip] is assigned only     |
+   |                   | when not skipping. It IS save-stated, at    |
+   |                   | video/cave.cpp save_item(NAME(              |
+   |                   | m_spriteram_bank)).                         |
+   +-------------------+---------------------------------------------+
+   | video/gaelco3d.cpp| m_polydata_count is reset only inside the   |
+   |                   | not-skipping branch, so the polygon buffer  |
+   |                   | accumulates differently - and overflow      |
+   |                   | calls fatalerror("Out of polygon buffer").  |
+   +-------------------+---------------------------------------------+
+   | video/namcos22.cpp| m_skipped_this_frame is stored as driver    |
+   |                   | state and IS save-stated, at                |
+   |                   | drivers/namcos22.cpp.                       |
+   +-------------------+---------------------------------------------+
+   | video/taito_f3.cpp| two live sites gate get_sprite_info() only. |
+   |                   | Render-side; CPU visibility unverified.     |
+   +-------------------+---------------------------------------------+
+
+   [verified: grep skip_this_frame across src/mame, and the save_item
+   registrations named above]
+
+   Two peers running different frameskip therefore hold different
+   machine state on these drivers. Because the affected fields are in
+   the savestate, any state-hash comparison diverges even where the
+   game plays on regardless.
+
+   FORCE FRAMESKIP OFF AND IDENTICAL ON ALL PEERS. Do not treat it as
+   a per-user display preference.
+
+   One false positive, recorded so nobody re-finds it: the
+   m_f3_skip_this_frame writes at taito_f3.cpp are inside
+   #ifdef UNUSED_FUNCTION and are dead code. [verified]
+
+4.  Configuration that must match between peers
+
+   +----------------------+------------------------------------------+
+   | Must match           | Why                                      |
+   +======================+==========================================+
+   | the binary itself    | same compiler, same OPTIMIZE level. FP   |
+   |                      | codegen differs between levels; do not   |
+   |                      | pair an OPTIMIZE=0 peer with a release   |
+   |                      | one. [inferred]                          |
+   +----------------------+------------------------------------------+
+   | ROM set and -bios    | different ROMs are a different machine   |
+   +----------------------+------------------------------------------+
+   | m_base_time          | section 2.2                              |
+   +----------------------+------------------------------------------+
+   | DIP switches and     | cfg/<game>.cfg is loaded into port state |
+   | input remaps         | through configuration().config_register( |
+   |                      | "input", ...) in ioport_manager.         |
+   |                      | [verified: ioport.cpp]                   |
+   +----------------------+------------------------------------------+
+   | NVRAM, EEPROM, CMOS  | persisted machine state. Handshake on a  |
+   |                      | hash, or ship a canonical set and use    |
+   |                      | -nonvram_save. [inferred]                |
+   +----------------------+------------------------------------------+
+   | frameskip            | section 3                                |
+   +----------------------+------------------------------------------+
+   | -cheat               | injects writes. Force off. [inferred]    |
+   +----------------------+------------------------------------------+
+
+   The handshake should verify these rather than trust them. A peer
+   that silently differs produces a desync whose cause is invisible
+   from inside the emulator.
+
+5.  Settings that are safe to differ
+
+   Believed safe, and the reasoning, so that the next person can check
+   rather than re-derive:
+
+       -nosound / sound backend     sound is generated FROM emulated
+                                    state, it does not feed back
+       video backend, window size,  presentation only
+       -filter, HLSL settings
+       throttle, -speed             gate wall-clock pacing, not the
+                                    scheduler
+
+   [inferred] - none of these has been traced through the scheduler
+   the way frameskip was in section 3. Given that frameskip turned out
+   to be unsafe, treat this list as unconfirmed and pin these too until
+   somebody does the reading.
+
+6.  Open questions
+
+   o -numprocessors and the threaded rasterizers. MAME dispatches some
+     3D rasterization through osd_work_queue. Order-independence is
+     the design intent but has not been verified here. Force
+     -numprocessors 1 until it has. [guess]
+   o Whether the DRC (MIPS, PowerPC, SH, ARM) is bit-identical to the
+     C backend, and whether it is identical across host CPUs with
+     different feature sets. FORCE_DRC_C_BACKEND=1 removes the JIT
+     from the question. Irrelevant to CPS1 and Neo Geo, which use no
+     DRC. [guess]
+   o Section 5 in its entirety is [inferred], not read.
+   o Whether any surviving driver in the coinop set pulls in
+     omti8621, sc499 or esqpump. Unchecked; see 2.3.
+   o Cross-host determinism generally. Same binary on two x86-64 hosts
+     is expected to be identical; ARM is not in scope.

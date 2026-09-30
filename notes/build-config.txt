@@ -1,0 +1,235 @@
+MAMEUI Netplay                                        Analysis Note
+
+
+                 BUILD CONFIGURATION AND MSVC 2017
+
+
+Abstract
+
+   What this tree is, how it is configured, and the four toolchain
+   quirks that cost a day each if you meet them cold. MAMEUI's WinUI
+   frontend has never been built with MSVC; everything in section 3 is
+   a consequence of that.
+
+   The operational essentials - version, toolchain, the two build
+   commands - are repeated in CLAUDE.md because you need them to run
+   anything. The evidence lives here.
+
+   What we have actually changed in upstream files is in
+   upstream-edits.txt. This document is about the build system as it
+   stands.
+
+Table of Contents
+
+   1. What this tree is
+   2. The two builds
+      2.1. The full build
+      2.2. The narrow build for netplay work
+   3. Four quirks worth knowing before you start
+      3.1. Precompiled headers are off for MSVC, unconditionally
+      3.2. NOWERROR does not disable /WX under MSVC
+      3.3. The winui entry point resolves to the wrong main
+      3.4. Filter-file comments must use //
+   4. Which MAME versions can build with MSVC 2017 at all
+   5. Open questions
+
+1.  What this tree is
+
+   +----------------+-------------------------------------------------+
+   | Item           | Value                                           |
+   +================+=================================================+
+   | Repository     | Robbbert/mameui, tag210, branch netplay         |
+   +----------------+-------------------------------------------------+
+   | Commit         | 83deae72 "0.210 Release files", 2019-05-29      |
+   +----------------+-------------------------------------------------+
+   | MAME version   | 0.210. makefile emits BARE_BUILD_VERSION        |
+   |                | "0.210"                                         |
+   +----------------+-------------------------------------------------+
+   | Toolchain      | MSVC 2017, toolset v141. Pin to 15.7.6          |
+   +----------------+-------------------------------------------------+
+   | Python         | 3.10.5 on PATH                                  |
+   +----------------+-------------------------------------------------+
+   | OSD            | winui. messui is the MESS variant               |
+   +----------------+-------------------------------------------------+
+
+   [verified]
+
+   The version matters because the CDINO work used plain upstream MAME
+   0.210 - the same emulation core, no winui. Anything learned there
+   about driver behaviour transfers directly.
+
+   The 15.7.6 pin is MAME's own instruction for this release:
+   docs/source/initialsetup/compilingmame.rst states that MAME can only
+   be compiled with the Visual Studio 15.7.6 tools and that newer
+   versions have bugs. [upstream] Not independently tested here.
+
+   makedep.py and makelist.py are both Python-3 clean - no bare print
+   statements. [verified]
+
+2.  The two builds
+
+2.1.  The full build
+
+       make vs2017 OSD=winui TARGET=mame SUBTARGET=coinop PTR64=1 \
+            NOWERROR=1 DEBUG_DIR=n:\DEV\MAMEUI DEBUG_ARGS=-window
+
+   Solution at build/projects/winui/mamecoinop/vs2017/mamecoinop.sln,
+   binary mamecoinopui64.exe. The project directory comes from
+   scripts/genie.lua, which forms it as osd/target..subtarget, and the
+   ui64 suffix from winui.lua's targetsuffix for x64 Release.
+   [verified]
+
+   SUBTARGET=arcade builds the stock MAME arcade set instead. See
+   coinop-subtarget.txt for what coinop removes.
+
+   DEBUG_DIR and DEBUG_ARGS become debugdir() and debugargs() in
+   scripts/src/main.lua, which genie writes into the .vcxproj.user as
+   the debugger working directory and command line. Defaults are the
+   MAME directory and -window. [verified]
+
+2.2.  The narrow build for netplay work
+
+       make vs2017 OSD=winui TARGET=mame PTR64=1 NOWERROR=1 OPTIMIZE=0 \
+            SOURCES=src/mame/drivers/cps1.cpp SUBTARGET=netplay
+
+   SOURCES= is the mechanism that makes iteration bearable. genie
+   shells out to scripts/build/makedep.py twice: once with "target" to
+   synthesize the target script in memory, once with "drivers" to emit
+   build/generated/mame/<subtarget>.flt. It walks the named driver
+   sources and enables exactly the CPUs, sound, video and machine
+   devices they need. With SOURCES set, no hand-written
+   scripts/target/mame/<subtarget>.lua is required - the makefile's
+   dependency on it is inside an ifndef SOURCES. [verified]
+
+   Output mirrors the CDINO build exactly: netplay.vcxproj inside
+   build/projects/winui/mamenetplay/vs2017/mamenetplay.sln. That is how
+   the CDINO tree's mamedino/vs2017/dino.vcxproj was produced - it used
+   SOURCES= with SUBTARGET=dino, which is why no dino.lst or dino.lua
+   exists anywhere in that repository. [verified]
+
+   cps1.cpp is the right first target: integer-only in the emulated
+   path, two-player, save-state clean, and already understood from the
+   CDINO work.
+
+   Caveat from determinism.txt 4: OPTIMIZE=0 changes FP codegen, so do
+   not pair an OPTIMIZE=0 peer with a release peer.
+
+3.  Four quirks worth knowing before you start
+
+3.1.  Precompiled headers are off for MSVC, unconditionally
+
+   scripts/genie.lua sets flags { "NoPCH" } inside
+   configuration { "vs20*" }, and the PRECOMPILE option cannot override
+   it - precompiledheaders() would set pchheader("emu.h") but NoPCH
+   wins. [verified]
+
+   Every one of ~2300 driver sources therefore re-parses emu.h from
+   scratch. This is why a full MSVC build of MAME takes hours, and it
+   is the entire reason 2.2 exists. It is not a configuration mistake
+   to be fixed; assume it and work narrow.
+
+3.2.  NOWERROR does not disable /WX under MSVC
+
+   NOWERROR=1 drops flags { "FatalWarnings" } in the vs20* block, which
+   is what emits <TreatWarningAsError>. But scripts/genie.lua ALSO adds
+   a raw "/WX" in a buildoptions block in the same
+   configuration { "vs20*" }, and that block is not guarded by
+   NOWERROR. [verified]
+
+   So NOWERROR=1 alone leaves warnings-as-errors switched on for MSVC.
+   That is a bug in this vintage, not a misunderstanding of the option.
+
+   Our workaround is a project-scoped buildoptions { "/WX-" } in
+   scripts/src/osd/winui_cfg.lua, which relaxes only osd_winui and
+   qtdbg_winui. Core MAME and the executable keep /WX, which is
+   correct - upstream 0.210 compiled clean under vs2017.
+
+   It relies on MSVC's last-wins behaviour for /WX versus /WX-, since
+   both land in AdditionalOptions and project scope is emitted after
+   solution scope. [inferred] Confirm in the generated
+   osd_winui.vcxproj.
+
+3.3.  The winui entry point resolves to the wrong main
+
+   THE WORST KIND OF BUG: IT LINKS CLEAN.
+
+   genie emits <EntryPointSymbol>mainCRTStartup</EntryPointSymbol> for
+   an Application with neither the WinMain nor the Unicode flag set,
+   and the main executable project has neither. scripts/src/main.lua
+   sets kind "ConsoleApp", which maintargetosdoptions overrides to
+   WindowedApp; flags { "Unicode" } is set only in winui_cfg.lua, which
+   is dofile'd by the osd_winui and qtdbg_winui static libs and never
+   by the executable. [verified]
+
+   mainCRTStartup resolves main() in src/osd/windows/winmain.cpp -
+   which is stock MAME. MAMEUI's real entry is wWinMain in
+   src/osd/winui/mui_main.cpp, which calls MameUIMain in winui.cpp.
+   [verified]
+
+   Get it wrong and the build succeeds and runs as plain MAME with no
+   frontend. There is no diagnostic.
+
+   MinGW never meets this because winui.lua's mingw*-gcc block passes
+   -municode. There is no MSVC counterpart in the upstream script.
+   [verified]
+
+   flags { "WinMain" } alone is insufficient: it only suppresses
+   genie's EntryPointSymbol, leaving MSVC's /SUBSYSTEM:WINDOWS default
+   of WinMainCRTStartup, which wants ANSI WinMain. Setting both the
+   flag and /ENTRY:wWinMainCRTStartup means exactly one /ENTRY reaches
+   the linker rather than two resolved by ordering. [inferred]
+
+3.4.  Filter-file comments must use //
+
+   scripts/build/makelist.py treats a leading # in a filter file as an
+   IMPORT directive - it writes "Importing drivers from ..." and calls
+   parse_filter_file on the rest of the line. A # comment therefore
+   produces "Unable to open filter file" noise. Comments in a .flt use
+   // or /* */, both of which the parser strips. [verified]
+
+   Same file, same function: a leading + force-adds an individual
+   driver and a leading - removes one, which is how per-game exceptions
+   are expressed. See coinop-subtarget.txt.
+
+4.  Which MAME versions can build with MSVC 2017 at all
+
+   Measured across Robbbert/mameui tags by grepping each tag's makefile
+   for its vs20xx targets, and its compilingmame.rst for the documented
+   path:
+
+   +--------+------------+------------------+---------------------+
+   | Tag    | Date       | make vs2017      | Docs recommend      |
+   +========+============+==================+=====================+
+   | tag210 | 2019-05-29 | yes              | vs2017              |
+   +--------+------------+------------------+---------------------+
+   | tag226 | 2020-10-28 | yes              | vs2017              |
+   +--------+------------+------------------+---------------------+
+   | tag230 | 2021-03-31 | yes              | vs2017 - last one   |
+   +--------+------------+------------------+---------------------+
+   | tag231 | 2021-04-28 | yes              | vs2019 only         |
+   +--------+------------+------------------+---------------------+
+   | tag237 | 2021-10-27 | yes - last one   | vs2019 only         |
+   +--------+------------+------------------+---------------------+
+   | tag238 | 2021-11-24 | removed          | vs2019              |
+   +--------+------------+------------------+---------------------+
+
+   [verified]
+
+   Recorded because it bounds any future rebase: tag237 is the ceiling
+   for an MSVC 2017 build, and tag230 is the last release where that
+   path was still documented. genie itself has the action - the vs2017
+   generator and its v141 toolset mapping are present in
+   3rdparty/genie. [verified]
+
+5.  Open questions
+
+   o No build has been attempted. Every item in section 3 is static
+     analysis, not a compiler result.
+   o Whether the /WX- ordering assumption in 3.2 holds in the
+     generated vcxproj. Unverified until we generate.
+   o Whether the 15.7.6 pin is actually required at 0.210 or only at
+     later tags. [upstream] claim, untested.
+   o _WIN32_WINNT=0x0501 in winui_cfg.lua targets Windows XP against a
+     Windows 10 SDK. The define is there; the effect is unmeasured.
+   o ram_state size and snapshot cost for CPS1 - unmeasured, and it
+     decides whether rollback is viable. See netplay-hooks.txt.

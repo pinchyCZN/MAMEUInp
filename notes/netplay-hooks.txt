@@ -1,0 +1,215 @@
+MAMEUI Netplay                                          Design Note
+
+
+              WHERE WE HOOK MAME, AND WHAT IT GIVES US
+
+
+Abstract
+
+   The integration points in MAME 0.210 that the netplay layer attaches
+   to, and what upstream already guarantees at each one. Every hook
+   named here was read out of this tree.
+
+   The short version: MAME already contains an input chokepoint that is
+   provably bit-exact, an in-memory savestate class, and a bounded ring
+   of them. We are wiring a network source into machinery that exists,
+   not building it.
+
+   Determinism preconditions are in determinism.txt. The wire format
+   will be in protocol.txt, which is not written yet.
+
+Table of Contents
+
+   1. The input chokepoint
+      1.1. Why this layer and not another
+      1.2. What the serialization looks like
+   2. Session base time
+   3. Rollback primitives that already exist
+      3.1. ram_state
+      3.2. rewinder
+      3.3. Savestate coverage is per driver
+   4. Where the frontend fits
+   5. Files we expect to touch
+   6. Open questions
+
+1.  The input chokepoint
+
+   ioport_manager::frame_update() in src/emu/ioport.cpp. It is reached
+   once per frame from frame_update_callback(), which is registered as
+   a MACHINE_NOTIFY_FRAME notifier in ioport_manager::initialize.
+   [verified]
+
+   The order inside it is what matters:
+
+       playback_frame(curtime);
+       record_frame(curtime);
+       ...
+       for each digital_joystick : joystick.frame_update();
+       for each port            : port.second->frame_update();
+       for each port            : playback_port(*port.second);
+                                  record_port(*port.second);
+
+   [verified: ioport.cpp, ioport_manager::frame_update]
+
+   Local polling happens in the per-port frame_update pass. The
+   playback pass then OVERWRITES what polling produced. That is the
+   slot netplay occupies: poll locally, serialize, exchange, overwrite.
+
+1.1.  Why this layer and not another
+
+   Because .inp playback is bit-exact and this is the layer that makes
+   it so. Any hook further out - the OSD input modules, the UI, the
+   keyboard handler - sits above the point where MAME itself considers
+   input canonical, so it would be reproducing a guarantee instead of
+   inheriting one. Any hook further in is inside driver code and is
+   per-driver.
+
+   Choosing this layer is therefore not a preference. It is the only
+   place where determinism is free.
+
+1.2.  What the serialization looks like
+
+   playback_port and record_port in the same file are the existing
+   model to copy: per port, the digital value, then each analog field's
+   state. Read them before designing the packet - the set of fields
+   that must travel is already enumerated there, and getting it wrong
+   produces a desync rather than a compile error. [verified]
+
+2.  Session base time
+
+   Covered in determinism.txt 2.2; repeated here only as the hook, not
+   the reasoning.
+
+       record_init()    captures host time via machine().base_datetime()
+                        into the .inp header
+       playback_init()  reads it back and returns it as time_t
+       ioport_manager::initialize  returns that value upward
+
+   [verified: ioport.cpp]
+
+   The server picks the session base time and broadcasts it at join.
+   We substitute a network source for the .inp header; the path that
+   applies it already exists and is exercised by every .inp playback.
+
+3.  Rollback primitives that already exist
+
+   src/emu/save.h. This is the find that should shape the plan: roughly
+   the backend of a GGPO-style rollback is already written, maintained
+   upstream, and exercised by MAME's own rewind feature.
+
+3.1.  ram_state
+
+       class ram_state {
+           util::vectorstream m_data;
+           attotime           m_time;
+           static size_t get_size(save_manager &save);
+           save_error save();
+           save_error load();
+       };
+
+   [verified: save.h]
+
+   An in-memory savestate with a known size up front. That is exactly
+   the snapshot primitive rollback needs, without going through
+   emu_file.
+
+   save_manager::dispatch_presave() and dispatch_postload() are public,
+   which is what any manual snapshot has to bracket. [verified: save.h]
+
+3.2.  rewinder
+
+       class rewinder {
+           size_t m_capacity;        // MB, from the rewind_capacity option
+           std::vector<std::unique_ptr<ram_state>> m_state_list;
+           bool capture();
+           bool step();
+           void invalidate();
+       };
+
+   Reachable as machine().save().rewind(). [verified: save.h]
+
+   A capacity-bounded ring of ram_states with capture, step and
+   invalidate. Whether its eviction policy suits frame-granular
+   rollback is untested; if not, ram_state alone is still the right
+   primitive and the ring is ours to write.
+
+3.3.  Savestate coverage is per driver
+
+   MACHINE_SUPPORTS_SAVE appears 8778 times across src/mame.
+   [verified: grep]
+
+   Coverage is broad but it is a per-driver flag, not a platform
+   guarantee. Check the specific driver before promising rollback for a
+   game. Drivers without it get lockstep only.
+
+   Note also determinism.txt 3: a field can be save-stated and still be
+   perturbed by a host-side setting. Savestate coverage and determinism
+   are separate properties.
+
+4.  Where the frontend fits
+
+   MAMEUI runs the emulator IN-PROCESS. RunMAME() in
+   src/osd/winui/winui.cpp constructs a windows_osd_interface, obtains
+   a mame_machine_manager and calls execute(), having first hidden the
+   frontend window with ShowWindow(hMain, SW_HIDE). [verified]
+
+   Consequences:
+
+   o No IPC. Lobby state, the socket, and session parameters can be
+     handed straight into the emulation.
+   o The play_options struct in winui.cpp already plumbs
+     OPTION_RECORD and OPTION_PLAYBACK from a dialog into the options
+     passed to the machine. A netplay session drops into the same
+     struct and the same dialog. [verified]
+   o mame_main and the #include "windows/main.cpp" in
+     winui/mui_main.cpp are vestigial: on a desktop build main.cpp's
+     body is empty, and RunMAME never calls mame_main. Do not build
+     anything on that path. [verified]
+
+   The entry-point hazard this creates for MSVC builds is a build
+   matter, not a netplay one - see build-config.txt.
+
+5.  Files we expect to touch
+
+   Kept in one place so the rebase list stays honest. The authoritative
+   record of what has ACTUALLY changed is upstream-edits.txt; this is
+   the forecast.
+
+   +---------------------------+---------------------------------------+
+   | File                      | Why                                   |
+   +===========================+=======================================+
+   | src/emu/netplay/          | ours, new. The core.                  |
+   +---------------------------+---------------------------------------+
+   | src/emu/ioport.cpp        | the hook, section 1                   |
+   +---------------------------+---------------------------------------+
+   | scripts/src/emu.lua       | it lists its 227 sources explicitly   |
+   |                           | and does not glob, so new files must  |
+   |                           | be named. [verified]                  |
+   +---------------------------+---------------------------------------+
+   | src/emu/emuopts.cpp / .h  | -netplay* options                     |
+   +---------------------------+---------------------------------------+
+   | src/osd/winui/winui.cpp   | lobby UI, play_options, section 4     |
+   +---------------------------+---------------------------------------+
+
+   src/emu/netplay/ rather than a separate static library because both
+   things the core must reach - the chokepoint in ioport.cpp and the
+   savestate machinery in save.h - live in src/emu. A separate lib
+   needs a genie project, a link edge in main.lua and an include path
+   into src/emu: three upstream edits instead of one. [inferred]
+
+6.  Open questions
+
+   o Whether rewinder's eviction policy fits frame-granular rollback,
+     or whether we want our own ring over ram_state. Untested.
+   o ram_state::get_size for CPS1 - unmeasured. It decides whether
+     per-frame snapshotting is viable at 60 Hz.
+   o Whether ram_state round-trips cleanly on CPS1 with Q-Sound
+     present. Untested.
+   o Exact field set that must travel per port. Read playback_port and
+     record_port and write it into protocol.txt.
+   o Whether the server should relay the input stream or only broker
+     the session, with peers connected directly. Relaying through the
+     server costs roughly 1.5x the peer-to-peer round trip. Undecided.
+   o Desync detection: which subset of state to hash, and how often.
+     Nothing designed yet. It has to exist before rollback, or every
+     later bug is invisible.

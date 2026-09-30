@@ -1,0 +1,94 @@
+MAMEUI Netplay                                              Protocol
+
+
+                     THE WIRE FORMAT
+
+
+Abstract
+
+   STATUS: NOT YET DESIGNED. No packet layout, no version gate, no
+   handshake exists.
+
+   This file exists because CLAUDE.md and netplay-hooks.txt both point
+   at it, and a dangling pointer is worse than a stub. What it holds
+   today is the set of constraints the format has to satisfy, all of
+   which are already established. Those constraints are facts; the
+   format is not.
+
+   When the format is designed it replaces sections 2 and 3 with the
+   real thing.
+
+Table of Contents
+
+   1. Constraints the format has to satisfy
+      1.1. The payload is decided by MAME, not by us
+      1.2. The handshake has to verify, not trust
+      1.3. Session base time travels at join
+   2. Packet layout
+   3. Handshake
+   4. Open questions
+
+1.  Constraints the format has to satisfy
+
+1.1.  The payload is decided by MAME, not by us
+
+   The per-frame payload is whatever ioport_manager needs to reproduce
+   a frame, and that set is already enumerated in record_port and
+   playback_port in src/emu/ioport.cpp: per port, the digital value,
+   then each analog field's state. [verified]
+
+   Read those two functions and transcribe the field set. Inventing a
+   payload and hoping it is sufficient produces a desync rather than a
+   compile error, because a field we fail to send is simply a field
+   that differs between peers.
+
+   See netplay-hooks.txt 1.2.
+
+1.2.  The handshake has to verify, not trust
+
+   determinism.txt 4 lists what must match between peers: the binary,
+   the ROM set and -bios, the DIP and input configuration, NVRAM and
+   EEPROM contents, frameskip, and -cheat off.
+
+   Every one of those is something a peer can silently get wrong, and
+   none of them announces itself from inside the emulator. The
+   handshake exchanges a digest of each and refuses the session on a
+   mismatch. A session that starts and desyncs three minutes later is
+   far more expensive than one that refuses to start.
+
+1.3.  Session base time travels at join
+
+   The server chooses m_base_time for the session and broadcasts it.
+   Every RTC device in MAME derives from that single value, so syncing
+   it makes real-time-clock chips deterministic; not syncing it
+   diverges any driver with an RTC immediately.
+
+   determinism.txt 2.2 for the mechanism, netplay-hooks.txt 2 for the
+   hook that applies it.
+
+2.  Packet layout
+
+   Not designed.
+
+3.  Handshake
+
+   Not designed.
+
+4.  Open questions
+
+   o Whether the server relays the input stream or only brokers the
+     session with peers connected directly. Relaying costs roughly
+     1.5x the peer-to-peer round trip. Undecided, and it changes the
+     packet layout.
+   o Desync detection: which subset of machine state to hash, how
+     often, and whether the digest travels in the per-frame packet or
+     out of band. It has to exist BEFORE rollback - without it every
+     later bug is invisible.
+   o Input delay: fixed at join, or negotiated, or adaptive.
+   o Version gating. A peer built from a different commit is a
+     different emulator; the digest in 1.2 should make that
+     unrepresentable rather than merely detectable.
+   o Resync payload. ram_state's serialized form is the obvious
+     candidate, but its size for CPS1 is unmeasured - see
+     netplay-hooks.txt 6.
+   o Late join and spectators. Out of scope until lockstep works.

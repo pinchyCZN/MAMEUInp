@@ -173,12 +173,14 @@ updated.
 
 | What | Where it lives |
 |---|---|
-| where we hook MAME, and what upstream guarantees | `notes/` |
+| where we hook MAME, and what upstream guarantees | `notes/netplay-hooks.txt` |
 | what perturbs emulated state | `notes/determinism.txt` |
 | the wire format | `notes/protocol.txt` |
+| how the trimmed driver set is derived | `notes/coinop-subtarget.txt` |
 | every upstream file we changed | `notes/upstream-edits.txt` |
 | why our C++ is shaped this way | the `src/emu/netplay/` comment |
-| build flags and toolchain quirks | this file, **Build configuration** |
+| the build commands you need to run anything | this file, **Build configuration** |
+| toolchain quirks and their evidence | `notes/build-config.txt` |
 | project rules | this file |
 
 Everything else **points at** that home - `see determinism.txt 3.4` - and does
@@ -367,60 +369,47 @@ make vs2017 OSD=winui TARGET=mame PTR64=1 NOWERROR=1 OPTIMIZE=0 \
      SOURCES=src/mame/drivers/cps1.cpp SUBTARGET=netplay
 ```
 
-### Four toolchain facts that will otherwise cost you a day
+### Four toolchain quirks that will otherwise cost you a day
 
-- **Precompiled headers are forcibly off for MSVC.** `scripts/genie.lua:489`
-  sets `flags { "NoPCH" }` in `configuration { "vs20*" }`, and the
-  `PRECOMPILE` option cannot override it. Every driver re-parses `emu.h`. This
-  is why a full build takes hours and why `SOURCES=` exists. `[verified]`
-- **`NOWERROR=1` does not disable warnings-as-errors under MSVC.** It drops
-  `flags { "FatalWarnings" }` at `genie.lua:492`, but the raw `"/WX"` at
-  `genie.lua:1334` sits in an unguarded `buildoptions` block in the same
-  `configuration { "vs20*" }`. Hence the project-scoped `/WX-` in
-  `winui_cfg.lua`. `[verified]`
-- **The winui entry point needs help under MSVC.** genie emits
-  `<EntryPointSymbol>mainCRTStartup</EntryPointSymbol>`, which resolves
-  `main()` in `winmain.cpp` - stock MAME, no GUI. MAMEUI's real entry is
-  `wWinMain` in `winui/mui_main.cpp`. Fixed with `flags { "WinMain" }` plus
-  `/ENTRY:wWinMainCRTStartup`. It links clean either way, so the symptom is a
-  missing frontend, not an error. `[verified]`
-- **Filter (`.flt`) comments must use `//`.** `makelist.py:52-55` treats a
-  leading `#` as an *import* directive and tries to open it as a file.
-  `[verified]`
+Named here so you know they exist; the evidence is in
+`notes/build-config.txt` 3.
 
----
+- **Precompiled headers are forcibly off for MSVC** and `PRECOMPILE` cannot
+  override it. Every driver re-parses `emu.h`; this is why a full build takes
+  hours and why the `SOURCES=` build above exists.
+- **`NOWERROR=1` does not disable warnings-as-errors under MSVC.** Hence the
+  project-scoped `/WX-` in `winui_cfg.lua`.
+- **The winui entry point resolves to the wrong `main` under MSVC.** It links
+  clean and runs as plain MAME with no frontend. There is no diagnostic.
+- **Filter (`.flt`) comments must use `//`** - a leading `#` is an import
+  directive.
 
 ## Netplay ground facts
 
-Established by reading this tree. Detail and evidence in
-`notes/netplay-hooks.txt` and `notes/determinism.txt`.
+Established by reading this tree. They are NOT repeated here - one fact, one
+home (rule 7.1):
 
-- **The input chokepoint is `ioport_manager::frame_update()` in
-  `src/emu/ioport.cpp`.** It calls `playback_frame`/`record_frame`, then
-  per-port `frame_update`, then per-port `playback_port`/`record_port`. This is
-  the exact layer that makes `.inp` playback bit-exact, so it is the correct
-  layer for netplay by construction. `[verified]`
-- **MAME is deterministic for a fixed binary, config and ROM set.** The proof is
-  that `-record`/`-playback` works. "Modern MAME is not deterministic" is
-  false as stated. `[verified]`
-- **`running_machine::rand()` is a fixed-seed LCG** (`machine.cpp`, seed
-  `0x9d14abd7`) and is itself save-stated. No host entropy. `[verified]`
-- **Machine base time is the real RTC hazard.** `record_init()` captures it via
-  `machine().base_datetime()` into the `.inp` header; `playback_init()` returns
-  it. The server must choose and broadcast the session base time. `[verified]`
-- **Rollback primitives already exist in `src/emu/save.h`**: `ram_state`
-  (in-memory savestate over `util::vectorstream`, with `save()`/`load()` and a
-  static `get_size()`) and `rewinder` (a capacity-bounded ring of them, with
-  `capture()`/`step()`/`invalidate()`). `[verified]`
-- **`MACHINE_SUPPORTS_SAVE` appears 8778 times in `src/mame/`** - savestate
-  coverage is broad, but it is per-driver and must be checked before promising
-  rollback for a given game. `[verified]`
-- **MAMEUI runs the emulator in-process.** `RunMAME()` in `winui/winui.cpp`
-  constructs `windows_osd_interface`, gets a `mame_machine_manager` and calls
-  `execute()`, having hidden the frontend window. No IPC needed between lobby
-  and emulation. `[verified]`
+| | |
+|---|---|
+| where we hook MAME, and what upstream guarantees at each point | `notes/netplay-hooks.txt` |
+| what perturbs emulated state, and the evidence | `notes/determinism.txt` |
+| toolchain quirks with their evidence | `notes/build-config.txt` |
+| how the trimmed driver set is derived | `notes/coinop-subtarget.txt` |
+| the wire format | `notes/protocol.txt` - not written yet |
 
----
+Three that change how you work and are worth knowing before you read any of
+them:
+
+- **MAME is deterministic for a fixed binary, config and ROM set.** The proof
+  is that `-record`/`-playback` works. "Modern MAME is not deterministic" is
+  false as stated. The hook that inherits this guarantee is
+  `ioport_manager::frame_update`.
+- **Frameskip is not presentation-only.** Several drivers derive save-stated
+  state from it, so peers running different frameskip hold different machine
+  state. Force it off and identical on all peers - `determinism.txt` 3.
+- **Rollback primitives already exist** in `src/emu/save.h`: `ram_state` and
+  `rewinder`. We are wiring a network source into machinery that is already
+  there.
 
 ## The journal - deferred, deliberately
 

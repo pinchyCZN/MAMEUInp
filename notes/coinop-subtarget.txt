@@ -1,0 +1,256 @@
+MAMEUI Netplay                                        Analysis Note
+
+
+              THE COINOP SUBTARGET: ARCADE MINUS MECHANICAL
+
+
+Abstract
+
+   A driver set that is MAME's arcade set with every pinball, fruit,
+   slot and other mechanical machine removed. What it drops, how the
+   selection is derived, and how to regenerate it after moving to
+   another MAME tag.
+
+   Both files are GENERATED. Do not hand-edit them.
+
+       python tools/gen_coinop.py            write the pair
+       python tools/gen_coinop.py --check    regenerate and diff
+
+Table of Contents
+
+   1. Result
+   2. How MAME selects a driver set
+      2.1. The two files a subtarget needs
+      2.2. Filter file syntax
+   3. Identifying mechanical machines
+      3.1. There is no list; there is a flag
+      3.2. Why a naive grep is wrong
+      3.3. The two authoritative sources
+   4. The drop policy
+   5. Regenerating after a tag change
+   6. Open questions
+
+1.  Result
+
+   +------------------------+-----------+-----------+-------------+
+   | Measure                | arcade    | coinop    | Change      |
+   +========================+===========+===========+=============+
+   | driver source files    |     1 404 |     1 242 |        -162 |
+   +------------------------+-----------+-----------+-------------+
+   | lines of driver code   | 1 581 148 | 1 437 779 |       -9.1% |
+   +------------------------+-----------+-----------+-------------+
+   | drivers in the list    |    32 614 |    17 092 |      -47.6% |
+   +------------------------+-----------+-----------+-------------+
+
+   The driver counts are makelist.py's own output, not an estimate:
+
+       python scripts/build/makelist.py src/mame/mame.lst \
+              src/mame/arcade.flt  ->  1406 sources, 32613 drivers
+       python scripts/build/makelist.py src/mame/mame.lst \
+              src/mame/coinop.flt  ->  1243 sources, 17091 drivers
+
+   [verified] Line counts are from the driver sources named in each
+   filter.
+
+   Note the asymmetry: 9 per cent of the compile but 48 per cent of the
+   list. The fruit-machine platforms carry thousands of ROM-set entries
+   against a few thousand lines each, so they bloat the game list far
+   more than the build.
+
+   Spot-checked present in coinop: dino, sf2, ssf2, mslug, kof98,
+   ddonpach, mk, tmnt, pacman, sfiii3, galaga, tekken, vf2, daytona.
+   Also present, deliberately: sbm (Sonic Blast Man) and wpksoc - see
+   section 4. Confirmed absent: apollo13, 24_130, m4tst2, bowarrow,
+   tom_13, sc2brkt. [verified]
+
+2.  How MAME selects a driver set
+
+2.1.  The two files a subtarget needs
+
+   scripts/src/main.lua picks the driver list like this:
+
+       if src/mame/<subtarget>.flt exists
+           makelist.py mame.lst <subtarget>.flt  -> drivlist.cpp
+       elseif src/mame/<subtarget>.lst exists
+           makelist.py <subtarget>.lst           -> drivlist.cpp
+       else
+           the whole mame.lst
+
+   [verified] The .lst branch is how the tiny subtarget works.
+
+   scripts/genie.lua then dofiles scripts/target/mame/<subtarget>.lua -
+   erroring if it is absent - and calls
+   createProjects_mame_<subtarget>. [verified]
+
+   SO BOTH FILES ARE REQUIRED, AND THEY DO DIFFERENT JOBS:
+
+       the .flt   decides which drivers reach drivlist.cpp
+       the .lua   decides which sources are compiled
+
+   The .flt must stay a SUBSET of what the .lua compiles. A driver in
+   drivlist.cpp whose source is not compiled is an unresolved
+   GAME_EXTERN at link time. The reverse is harmless - a compiled
+   source with no listed driver is dead code, and costs build time
+   without breaking anything.
+
+2.2.  Filter file syntax
+
+   From makelist.py's parse_filter_file and parse_file:
+
+       cps1.cpp        include that driver source
+       #other.flt      IMPORT another filter file - not a comment
+       +drivername     force-add one individual driver
+       -drivername     remove one individual driver
+       // or /* */     comment
+
+   mame.lst carries @source: markers - 2334 of them - and parse_file
+   only emits a driver if its current @source is in the filter list.
+   That is the whole matching mechanism. [verified]
+
+   THE # TRAP: a leading # is an import directive, so a # comment
+   header makes makelist try to open the comment text as a filename.
+   Use //. [verified]
+
+3.  Identifying mechanical machines
+
+3.1.  There is no list; there is a flag
+
+   The ground truth is the per-game MACHINE_MECHANICAL bit in each
+   GAME() macro's flags argument, defined in src/emu/gamedrv.h as
+   machine_flags::MECHANICAL. MAMEUI already reads it at runtime:
+   game_opts.h caches it and mui_util.cpp exposes it as
+   DriverIsMechanical(), which drives the Mechanical and Non Mechanical
+   folders in layout.cpp. [verified]
+
+   MACHINE_IS_SKELETON_MECHANICAL, also in gamedrv.h, is a combination
+   that includes it.
+
+3.2.  Why a naive grep is wrong
+
+   THIS IS THE LANDMINE IN THIS DOCUMENT. The flags argument is
+   routinely a per-file macro, so grepping driver sources for
+   MACHINE_MECHANICAL massively undercounts.
+
+   +-----------------------------+-------------------------------------+
+   | Indirection                 | Where                               |
+   +=============================+=====================================+
+   | #define GAME_FLAGS ...      | 26 driver files                     |
+   +-----------------------------+-------------------------------------+
+   | #define MACHINE_FLAGS ...   | sam.cpp, bfm_sc4.cpp, bfmsys85.cpp  |
+   +-----------------------------+-------------------------------------+
+   | #define MACHINE_IS_PINBALL  | whitestar.cpp only - not a real     |
+   |                             | MAME flag, a one-off local define   |
+   +-----------------------------+-------------------------------------+
+   | #define GAME_CUSTOM(...)    | 7 files, REDEFINED repeatedly       |
+   |   -> GAME(..., GAME_FLAGS)  | mid-file, so the macro table has to |
+   |                             | be tracked by source position       |
+   +-----------------------------+-------------------------------------+
+   | game lists in .hxx includes | bfm_ad5, bfm_sc5, maygay1b, mpu5 -  |
+   |                             | no GAME() in the .cpp at all        |
+   +-----------------------------+-------------------------------------+
+
+   [verified]
+
+   Measured difference on one file: mpu4.cpp reads 11 of 258 mechanical
+   unresolved, and 257 of 258 resolved.
+
+   The counter-trap: naomi.cpp, namcos23.cpp and cv1k.cpp ALSO define
+   GAME_FLAGS, without MECHANICAL. A rule of "file defines GAME_FLAGS"
+   would delete Naomi. tools/mech_scan.py asserts those three plus
+   cps1.cpp and neogeo.cpp come out at zero, and that mpu4, sam and
+   whitestar come out fully mechanical. Run it; the sanity block is the
+   point of it. [verified]
+
+3.3.  The two authoritative sources
+
+   o scripts/target/mame/arcade.lua contains a
+     createMAMEProjects(_target, _subtarget, "pinball") group with an
+     explicit 84-driver files{} block. MAMEdev's own pinball grouping.
+     [verified]
+   o The resolved MACHINE_MECHANICAL flag, section 3.1. Broader - it
+     also covers fruit, slot and redemption machines.
+
+   Neither alone is sufficient: the pinball group misses the fruit
+   platforms, and the flag misses nothing but needs the macro
+   resolution to read.
+
+4.  The drop policy
+
+   Encoded in tools/gen_coinop.py so it is reviewable in one place.
+
+   DROP, 162 driver sources:
+
+       every fully mechanical file        mech_scan.py class "full"
+       the mixed fruit/gambling platforms mpu4*, bfm_sc*, jpm*, aces1
+       the mixed pinball files            by35, gts1, allied, by17, gp_1
+                                          - their non-mechanical
+                                          stragglers are test and meter
+                                          -clear ROMs
+       the four .hxx-only fruit platforms bfm_ad5, bfm_sc5, maygay1b,
+                                          mpu5
+       the stale unkfr.cpp entry          see section 6
+
+   KEEP, six mixed files that are genuine arcade hardware carrying a
+   few mechanical entries. Dropping them wholesale would cost real
+   games:
+
+       itech8.cpp     5 of 32 mechanical - bowling and redemption
+                      alongside Golden Tee
+       taito_b.cpp    4 of 38 - Sonic Blast Man is a punching machine
+       segac2.cpp     2 of 42
+       m107.cpp       2 of 6  - World PK Soccer
+       namcond1.cpp   1 of 7
+       tapatune.cpp   2 of 3
+
+   The mechanical games inside those six stay in the list. Removing
+   them individually is possible with -drivername lines and was
+   deliberately not done; it costs 16 entries and buys nothing at
+   compile time.
+
+   The WHOLE pinball group block is excised from the .lua, not just its
+   84 driver lines, because it also carries 14 pinball-only support
+   devices: genpin, wpc, wpcsnd, wpc_dmd, wpc_pic, wpc_lamp, wpc_out,
+   wpc_shift, decopincpu, decodmd1, decodmd2, decodmd3, s11c_bg and
+   bally audio. Every surviving source in src/mame was scanned for
+   their headers and none includes any of them, so leaving them in
+   would compile 14 orphan objects. [verified]
+
+   Header entries in the .lua were deliberately NOT removed. Headers in
+   a files{} block are not compiled - they are there for the IDE - so
+   removing them gains nothing, and includes/mpu4.h is still needed by
+   mpu4vid.cpp and mpu4dealem.cpp, which survive. [verified]
+
+5.  Regenerating after a tag change
+
+       python tools/gen_coinop.py
+
+   It derives everything from that tag's arcade.flt and arcade.lua, so
+   a new MAME version needs no hand-editing of the drop list. Then:
+
+       python tools/gen_coinop.py --check                     idempotent?
+       python scripts/build/makelist.py src/mame/mame.lst \
+              src/mame/coinop.flt > NUL                       still valid?
+
+   --check regenerates in memory and diffs against what is on disk,
+   writing nothing. Use it to confirm the files have not been
+   hand-edited.
+
+   The generator reproduced the current coinop.lua byte-identically
+   when it was first written, which is what establishes that the file
+   on disk is its output and not a hand edit. [verified]
+
+6.  Open questions
+
+   o unkfr.cpp is listed in upstream arcade.flt, but the file does not
+     exist in src/mame/drivers, it is not in arcade.lua, and mame.lst
+     has no @source:unkfr.cpp section. Inert in stock arcade too; we
+     drop it. Upstream's problem, recorded so it is not re-found.
+     [verified]
+   o coinop.lua still enables pinball-only devices in its MACHINES and
+     SOUNDS tables - MACHINES["GENPIN"] among them. Harmless, a small
+     amount of device code. Deliberately left until there is a
+     known-good build to compare against.
+   o No build has been attempted with SUBTARGET=coinop. The filter and
+     the target script are validated against makelist.py only.
+   o Whether any driver in the coinop set pulls in a nondeterministic
+     device - see determinism.txt 2.3. Unchecked.
