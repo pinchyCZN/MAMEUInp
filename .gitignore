@@ -39,6 +39,15 @@
 !/*.md
 !/*.bdf
 !/LICENSE
+
+# NETPLAY: ours. Upstream's /* and /*/ above hide every new top-level
+# directory, so each one has to be whitelisted explicitly.
+!/.claude/
+!/notes/
+!/tools/
+!/server/
+/.journal.db
+tools/__pycache__/
 /.idea
 docs/build
 regtests/chdman/temp

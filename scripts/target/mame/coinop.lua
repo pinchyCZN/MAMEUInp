@@ -5,7 +5,7 @@
 --
 --   mame.lua
 --
---   MAME target makefile (coinop: arcade minus mechanical)
+--   MAME target makefile (coinop: arcade minus mech)
 --
 ---------------------------------------------------------------------------
 

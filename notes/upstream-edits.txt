@@ -1,0 +1,209 @@
+MAMEUI Netplay                                        Analysis Note
+
+
+                  UPSTREAM EDITS: REBASE CHECKLIST
+
+
+Abstract
+
+   Every file in this tree that belongs to upstream Robbbert/mameui and
+   that we have changed, with what changed and why. This list is the
+   rebase checklist: moving to another MAME tag means re-applying
+   exactly these and nothing else.
+
+   Base: Robbbert/mameui tag210, commit 83deae72 "0.210 Release files",
+   2019-05-29. Branch netplay. [verified]
+
+   Files we ADDED are listed separately in section 3; new files never
+   conflict and need no re-application, only a copy.
+
+   If a change is not on this list, we did not make it. Keeping that
+   true is the point of the document.
+
+Table of Contents
+
+   1. Edits: MSVC 2017 build fixes
+      1.1. Why each one
+      1.2. Two things deliberately NOT changed
+      1.3. .gitignore is deny-all, so new directories need whitelisting
+   2. Edits: netplay
+   3. Files we added
+   4. Open questions
+
+1.  Edits: MSVC 2017 build fixes
+
+   MAMEUI's WinUI frontend has only ever been built with MinGW. The
+   winui OSD build script carries a configuration block for
+   "mingw*-gcc" and nothing for MSVC. [verified] These five changes are
+   what MSVC needs; none of them alters behaviour under MinGW.
+
+   +----+------------------------------+------------------------------+
+   | No | File                         | Change                       |
+   +====+==============================+==============================+
+   |  1 | scripts/src/osd/winui.lua    | add configuration { "vs*" }  |
+   |    | scripts/src/osd/messui.lua   | with flags { "WinMain" } and |
+   |    |                              | linkoptions                  |
+   |    |                              | /ENTRY:wWinMainCRTStartup    |
+   +----+------------------------------+------------------------------+
+   |  2 | scripts/src/osd/winui.lua    | remove the duplicate         |
+   |    | scripts/src/osd/messui.lua   | src/osd/windows/winmain.cpp  |
+   |    |                              | entry (it was listed twice)  |
+   +----+------------------------------+------------------------------+
+   |  3 | scripts/src/osd/winui_cfg.lua| add buildoptions { "/WX-" }  |
+   |    |                              | under configuration { "vs*" }|
+   +----+------------------------------+------------------------------+
+   |  4 | src/osd/winui/dirwatch.cpp   | add #include <malloc.h>      |
+   |    | src/osd/winui/messui.cpp     | for alloca()                 |
+   |    | src/osd/winui/mui_opts.cpp   |                              |
+   +----+------------------------------+------------------------------+
+   |  5 | .gitignore                   | whitelist our top-level      |
+   |    |                              | directories - see 1.3        |
+   +----+------------------------------+------------------------------+
+
+1.1.  Why each one
+
+   1. Entry point. genie emits
+      <EntryPointSymbol>mainCRTStartup</EntryPointSymbol> when a
+      project is an Application with neither the WinMain nor the
+      Unicode flag set. The main executable project gets neither:
+      scripts/src/main.lua sets kind "ConsoleApp" (overridden to
+      WindowedApp by maintargetosdoptions), and flags { "Unicode" } is
+      set only in winui_cfg.lua, which is dofile'd by the osd_winui and
+      qtdbg_winui static libs and never by the executable. [verified]
+
+      mainCRTStartup resolves main() in src/osd/windows/winmain.cpp -
+      stock MAME. MAMEUI's real entry is wWinMain in
+      src/osd/winui/mui_main.cpp, calling MameUIMain in winui.cpp.
+      [verified]
+
+      THIS LINKS CLEAN EITHER WAY. The symptom of getting it wrong is a
+      build that runs as plain MAME with no frontend, not an error.
+      That is why it is first on the list.
+
+      flags { "WinMain" } alone is not enough: it only suppresses
+      genie's EntryPointSymbol, leaving MSVC's default for
+      /SUBSYSTEM:WINDOWS, which is WinMainCRTStartup and wants ANSI
+      WinMain. The /ENTRY is what selects the wide entry. Setting both
+      means exactly one /ENTRY reaches the linker rather than two
+      resolved by ordering. [inferred]
+
+   2. Duplicate source. src/osd/windows/winmain.cpp appeared twice in
+      the osd_winui files list. Under GNU make both entries name the
+      same object path so it builds once, and the mingw block's
+      -Wl,--allow-multiple-definition absorbs the duplicate link entry.
+      A .vcxproj containing one source twice gives MSB8027 and two
+      compilations racing for one object path. [verified]
+
+   3. Warnings as errors. scripts/genie.lua sets a raw "/WX" in
+      buildoptions inside configuration { "vs20*" }, and that block is
+      NOT guarded by the NOWERROR option - NOWERROR only drops
+      flags { "FatalWarnings" } a few hundred lines earlier. So
+      NOWERROR=1 does not disable warnings-as-errors under MSVC.
+      [verified]
+
+      The /WX- is project-scoped to winui_cfg.lua, so it relaxes only
+      the osd_winui and qtdbg_winui projects. Core MAME and the
+      executable keep /WX, which is correct: upstream 0.210 compiled
+      clean under vs2017.
+
+      This relies on MSVC's last-wins behaviour for /WX vs /WX-,
+      because both land in AdditionalOptions and project scope is
+      emitted after solution scope. [inferred] Confirm in the
+      generated osd_winui.vcxproj.
+
+   4. alloca. MSVC declares alloca in <malloc.h>, and <windows.h> does
+      not pull it in. dirwatch.cpp includes only <windows.h> and local
+      headers while calling alloca three times. MinGW gets the
+      declaration transitively. Certain C3861 otherwise. [verified]
+
+1.3.  .gitignore is deny-all, so new directories need whitelisting
+
+   Upstream's .gitignore opens with
+
+       /*
+       /*/
+
+   which hides every top-level entry, and then re-admits the ones MAME
+   wants with ! lines. [verified] The consequence is that a new
+   top-level directory of ours is invisible to git until it is named:
+   notes/, tools/, .claude/ and server/ were all silently untracked
+   until whitelisted. CLAUDE.md survived only because line 39 is
+   !/*.md.
+
+   src/emu/netplay/ needs nothing, because !/src/ already admits it.
+   [verified]
+
+   THIS IS THE TRAP WORTH KNOWING. git status showed nothing missing -
+   an ignored directory is simply absent from the output, not flagged.
+   Adding a top-level directory here without a matching ! line loses
+   the work at the next clone.
+
+1.2.  Two things deliberately NOT changed
+
+   src/lib/winpcap as an include directory in the ocore_winui project
+   does not exist in 0.210 - src/lib holds only formats, netlist and
+   util. It is a dead path from an older tree. MSVC silently ignores a
+   missing /I, and the real pcap headers come from
+   3rdparty/winpcap/Include via scripts/src/osd/modules.lua. Harmless;
+   left alone to keep the rebase surface small. [verified]
+
+   _WIN32_WINNT=0x0501 in winui_cfg.lua targets Windows XP against a
+   Windows 10 SDK. Not yet observed to break anything at 0.210.
+   [verified that the define is there; effect unmeasured]
+
+2.  Edits: netplay
+
+   None yet.
+
+   Expected, when the core lands:
+
+   +------------------------------+--------------------------------+
+   | File                         | Expected change                |
+   +==============================+================================+
+   | scripts/src/emu.lua          | add src/emu/netplay/* to the   |
+   |                              | emu project. It lists its 227  |
+   |                              | sources explicitly and does    |
+   |                              | not glob. [verified]           |
+   +------------------------------+--------------------------------+
+   | src/emu/ioport.cpp           | the input hook, in             |
+   |                              | ioport_manager::frame_update   |
+   |                              | alongside the existing         |
+   |                              | record/playback calls          |
+   +------------------------------+--------------------------------+
+   | src/emu/emuopts.cpp / .h     | -netplay* options              |
+   +------------------------------+--------------------------------+
+
+   Each one gets a contiguous block marked NETPLAY: so it is findable
+   by grep and re-appliable by hand.
+
+3.  Files we added
+
+   These are ours. Nothing upstream references them except by the
+   SUBTARGET name on the make command line.
+
+       CLAUDE.md                        project rules
+       .claude/settings.json            permissions, read-only git
+       notes/                           this directory
+       tools/                           our scripts
+       server/                          the relay server
+       src/emu/netplay/                 the netplay core
+       src/mame/coinop.flt              trimmed driver filter
+       scripts/target/mame/coinop.lua   its target script
+
+   coinop.flt and coinop.lua are GENERATED, not hand-maintained:
+
+       python tools/gen_coinop.py            write the pair
+       python tools/gen_coinop.py --check    regenerate and diff
+
+   Re-run after moving to another tag; the generator derives everything
+   from that tag's arcade.flt and arcade.lua. See coinop-subtarget.txt.
+
+4.  Open questions
+
+   o Whether the /WX- ordering assumption in 1.1(3) actually holds in
+     the generated vcxproj. Unverified until we generate.
+   o Whether the VS2017 15.7.6 toolset pin is actually required at
+     0.210 or only for later tags. MAME's own docs for this release say
+     newer 2017 toolsets have bugs; not tested here. [upstream]
+   o No build has been attempted yet. Every item in section 1 is a
+     static-analysis fix, not a fix confirmed by a compiler.
