@@ -1,7 +1,7 @@
 MAMEUI Netplay                                              Protocol
 
 
-                     THE WIRE FORMAT
+                        THE WIRE FORMAT
 
 
 Abstract
@@ -9,42 +9,103 @@ Abstract
    STATUS: NOT YET DESIGNED. No packet layout, no version gate, no
    handshake exists.
 
-   This file exists because CLAUDE.md and netplay-hooks.txt both point
-   at it, and a dangling pointer is worse than a stub. What it holds
-   today is the set of constraints the format has to satisfy, all of
-   which are already established. Those constraints are facts; the
-   format is not.
+   What is settled is the SHAPE of the payload and the reason for it:
+   the wire format is player-relative, and it is not MAME's port
+   structure. Section 1 is the constraints, all of them read out of
+   code. Section 2 is the resync mechanism, settled in structure but
+   not in layout. Sections 3 and 4 are the format itself and are empty.
 
-   When the format is designed it replaces sections 2 and 3 with the
-   real thing.
+   Injection into MAME happens at the port level; that is a different
+   layer from this one and lives in netplay-hooks.txt 1.5. Injection is
+   a plain write, not a masked one - netplay-hooks.txt 1.3.
 
 Table of Contents
 
    1. Constraints the format has to satisfy
-      1.1. The payload is decided by MAME, not by us
-      1.2. The handshake has to verify, not trust
-      1.3. Session base time travels at join
-   2. Packet layout
-   3. Handshake
-   4. Open questions
+      1.1. The payload is player-relative, not port-shaped
+      1.2. The translation table is the format
+      1.3. The handshake has to verify, not trust
+      1.4. Session base time travels at join
+      1.5. Carry a frame counter in the payload
+   2. Resync from a savestate
+      2.1. Two options, and only two
+      2.2. Control plane in band, bulk plane out of band
+      2.3. A resync budget, not a resync loop
+      2.4. Size and compression
+      2.5. This is most of rollback
+   3. Packet layout
+   4. Handshake
+   5. Open questions
 
 1.  Constraints the format has to satisfy
 
-1.1.  The payload is decided by MAME, not by us
+1.1.  The payload is player-relative, not port-shaped
 
-   The per-frame payload is whatever ioport_manager needs to reproduce
-   a frame, and that set is already enumerated in record_port and
-   playback_port in src/emu/ioport.cpp: per port, the digital value,
-   then each analog field's state. [verified]
+   THE OBVIOUS DESIGN IS WRONG. MAME's own per-frame input record is
+   ioport_manager::record_port. Copying its structure onto the wire
+   fails for two independent reasons, both established in
+   netplay-hooks.txt.
 
-   Read those two functions and transcribe the field set. Inventing a
-   payload and hoping it is sufficient produces a desync rather than a
-   compile error, because a field we fail to send is simply a field
-   that differs between peers.
+   First, PLAYER IDENTITY IS ALREADY GONE from it - digital is one
+   merged bitmask per port, with nothing in it to route. See
+   netplay-hooks.txt 1.3.
 
-   See netplay-hooks.txt 1.2.
+   Second, every player uses the SAME keys locally, while MAME's
+   default sequences are disjoint per player. See netplay-hooks.txt 1.4.
+   A player must not have to learn a different keyboard because they
+   joined second.
 
-1.2.  The handshake has to verify, not trust
+   So the payload is a compact per-player logical input word - "player
+   2 pressed the button that is Button 1 for them" - and the receiving
+   side maps each player's word onto that player's actual ports. The
+   sender never needs to know MAME's port layout and the format never
+   changes when a driver's ports change.
+
+   This is what the 0.119 Kaillera build did, and it is the one part of
+   that design worth copying wholesale. [verified:
+   e:/DEV/mame32/119/src/emu/inptport.c]
+
+1.2.  The translation table is the format
+
+   The wire format is only meaningful alongside a table mapping
+
+       (player, logical input id) -> (port, mask)
+
+   built ONCE at session start by walking every port and field, because
+   the metadata needed to build it is gone by injection time
+   (netplay-hooks.txt 1.5).
+
+   IT NEEDS TWO RULES, NOT ONE:
+
+       INPUT_CLASS_CONTROLLER   the player comes from field.player()
+       start and coin           the player is encoded in the TYPE -
+                                IPT_START2, IPT_COIN2
+
+   Routing start and coin by field.player() instead sends every
+   player's start and coin to player 1. The reason, and the evidence,
+   are netplay-hooks.txt 1.4.
+
+   Kaillera's equivalent is kBitsPlayValues[player][bit] -> (port
+   index, port mask, polarity), plus a usedkeys array recording which
+   bits of the per-player word no field claims. It stole up to three of
+   those spare bits to carry UI commands inside the input stream.
+   [verified]
+
+   Its Mahjong path is worth noting as precedent rather than as a
+   model: 29 mutually exclusive keys compressed to a single byte index.
+   The format was allowed to be game-aware where that paid. [verified]
+
+   THE TABLE HAS TO BE TOTAL OVER DIGITAL FIELDS. PORT_CUSTOM and
+   analog values are never stored in a port's digital value - they are
+   recomputed on every read - so injection cannot damage them
+   (netplay-hooks.txt 1.3). But every DIGITAL field is in digital, so
+   any digital field the table does not cover gets zeroed by the
+   injection. Service, tilt and driver-internal digital bits therefore
+   need an owner in the format even though no player presses them:
+   either a small shared word, or frozen at handshake. A digital field
+   in neither set is a bug, not a default.
+
+1.3.  The handshake has to verify, not trust
 
    determinism.txt 4 lists what must match between peers: the binary,
    the ROM set and -bios, the DIP and input configuration, NVRAM and
@@ -56,7 +117,12 @@ Table of Contents
    mismatch. A session that starts and desyncs three minutes later is
    far more expensive than one that refuses to start.
 
-1.3.  Session base time travels at join
+   NVRAM is part of this rather than a special case. A driver that
+   needs a boot to initialise its NVRAM does that boot inside the
+   synced session; what the handshake has to pin down is the state it
+   starts from. See netplay-hooks.txt 5.2.
+
+1.4.  Session base time travels at join
 
    The server chooses m_base_time for the session and broadcasts it.
    Every RTC device in MAME derives from that single value, so syncing
@@ -66,29 +132,201 @@ Table of Contents
    determinism.txt 2.2 for the mechanism, netplay-hooks.txt 2 for the
    hook that applies it.
 
-2.  Packet layout
+1.5.  Carry a frame counter in the payload
 
-   Not designed.
+   Kaillera packed a synccount into the upper 16 bits of its 4-byte
+   payload. [verified: e:/DEV/mame32/119/src/emu/inptport.c] It costs
+   almost nothing and it catches the failure that is otherwise
+   invisible: two peers applying input to different frames.
 
-3.  Handshake
+   USE 32 BITS, NOT 16 OR 24. At 60 Hz a 16-bit counter wraps every 18
+   minutes and a 24-bit one every 77 hours; 32 bits wraps in about two
+   years, which is never. The cost of the widest option is 4 bytes per
+   frame, or 240 bytes per second - noise on any link built after 1998.
 
-   Not designed.
+   The cost of the narrow option is wrap-aware comparison in every
+   place a frame number is compared, tagged or reported, and wrap bugs
+   surface 18 minutes into a session and never in a test. Kaillera
+   packed bits because it targeted dial-up. That constraint is gone;
+   the complexity it bought is not worth keeping.
 
-4.  Open questions
+   The same argument retires Kaillera's usedkeys trick (1.2). Stealing
+   spare input bits for UI commands couples the UI protocol to each
+   driver's port layout to save a byte. Give UI and chat their own
+   message types instead.
 
-   o Whether the server relays the input stream or only brokers the
-     session with peers connected directly. Relaying costs roughly
-     1.5x the peer-to-peer round trip. Undecided, and it changes the
-     packet layout.
+   A frame counter is not a substitute for a state hash. A counter
+   catches misalignment; only a hash of emulated state catches
+   divergence while still aligned.
+
+2.  Resync from a savestate
+
+   How a peer that has diverged is brought back onto the host's
+   timeline. The host is authoritative by definition: it is the peer
+   everyone else has agreed to match.
+
+   The structure below is settled. The layout is section 3 and is not.
+
+2.1.  Two options, and only two
+
+   The host snapshots at frame S. Transit costs M frames of wall clock,
+   so the state arrives when the peers are at frame S+M. That gap is
+   unavoidable, and it forces a choice.
+
+   +---+-------------------------------+----------------------------+
+   | # | Apply it as                   | Consequence                |
+   +===+===============================+============================+
+   | A | state(S) at frame S+M, for    | every peer INCLUDING the   |
+   |   | everyone                      | host jumps back M frames.  |
+   |   |                               | Consistent, but it makes   |
+   |   |                               | the correct peers hiccup   |
+   |   |                               | to fix the broken one.     |
+   +---+-------------------------------+----------------------------+
+   | B | state(S) on the diverged peer | nobody else observes       |
+   |   | only, which then replays      | anything at all. The host  |
+   |   | inputs S..S+M to catch up     | never hiccups.             |
+   +---+-------------------------------+----------------------------+
+
+   THERE IS NO THIRD OPTION. A state from the past applied in the
+   present is either stale for everybody or needs catching up by
+   somebody. A design that claims to avoid both is hiding one of them.
+   [inferred]
+
+   Take B. The asymmetry is the point: the peer that broke pays, and
+   the peers that did not break are untouched.
+
+   The replay is cheaper than the phrase "fast-forward" suggests. CPS1
+   emulates at a large multiple of real time on a modern host, so
+   replaying M=120 frames should cost on the order of tens of
+   milliseconds - a blink for the resyncing player, nothing at all for
+   anyone else. [inferred - the multiple is unmeasured, see section 5]
+
+   THE ONE RULE THAT MAKES THIS INVISIBLE: the resyncing peer MUST KEEP
+   SENDING INPUT WHILE IT CATCHES UP. Input generation does not depend
+   on emulation state - the keyboard says what it says regardless of
+   which frame the emulator is on. A peer that stops sending while it
+   replays stalls every other peer waiting on its input, converting a
+   private hiccup into a public one. That is the failure that makes
+   savestate resync feel terrible in practice, and it is a policy
+   mistake rather than a protocol one.
+
+2.2.  Control plane in band, bulk plane out of band
+
+   Split the announcement from the payload.
+
+       IN BAND, through the server, ordered with the input stream,
+       tiny: "state for frame S exists, id X, size N, digest H"
+
+       OUT OF BAND, host direct to the requesting peer where NAT
+       permits and relayed through the server only as a fallback:
+       the N bytes themselves
+
+   The state is applied when BOTH the in-band tag and the bytes are
+   present. The tag is what makes the apply point deterministic, and it
+   is what the 0.119 design got right by putting state events in the
+   same ordered stream as input.
+
+   Two reasons for the split. First, a 2 MB payload sharing a stream
+   with 60 Hz input head-of-line blocks that input, which stalls
+   everybody - the same failure as 2.1's rule arriving by another
+   route. Second, it keeps the server dumb: in the common case it
+   forwards a few dozen bytes and never touches the bulk at all.
+
+2.3.  A resync budget, not a resync loop
+
+   THE FAILURE MODE TO DESIGN AGAINST: a peer desyncs, requests a
+   state, applies it, desyncs again, requests again - until the relay's
+   bandwidth is exhausted and the peer is dropped. Reported from
+   experience with another emulator's netplay, where mid-to-late-1990s
+   drivers were the worst offenders. [guess - not reproduced here, but
+   obvious enough to design against]
+
+   Three defences, in increasing order of importance:
+
+   o Rate limit requests server side, with backoff.
+   o CAP THEM. After K resyncs in one session, stop resyncing and tell
+     the user, in words, that this session or this driver is
+     unsupported.
+   o Never resync on a timer. The trigger is a state-hash mismatch
+     (1.5), so a resync only happens where there is evidence of
+     divergence.
+
+   The cap matters most, and not for bandwidth. Resync that is cheap
+   and automatic converts a determinism bug into "occasional hitching",
+   and the root cause is then never found. A budget converts the same
+   symptom into a diagnosis: this driver desyncs, here is the frame, go
+   and read determinism.txt. KEEPING DESYNCS VISIBLE IS WORTH MORE THAN
+   KEEPING SESSIONS ALIVE.
+
+2.4.  Size and compression
+
+   Savestates for mid-to-late-1990s hardware reach roughly 2 MB
+   COMPRESSED in another emulator's implementation. [guess - reported
+   from experience, not measured here] Treat that as the design point
+   rather than the small-driver case.
+
+   o Compress. MAME already bundles zlib and lzma, so there is nothing
+     to add, and savestates are mostly zeros and repeated patterns.
+   o Measure first. ram_state::get_size(save_manager &) exists
+     precisely to answer "how big is a state for this driver", and is a
+     one-line measurement once a build runs (netplay-hooks.txt 3.1).
+     The answer decides whether a transfer needs chunking at all.
+   o DO NOT delta against a previously known state. It requires the
+     server to track emulator state, which turns a dumb relay into a
+     participant in the emulation. The bytes are not worth that.
+
+2.5.  This is most of rollback
+
+   In-band frame-tagged state plus "load it and replay the inputs from
+   there" IS rollback, triggered rarely over a long window instead of
+   constantly over a short one.
+
+   Build resync first and rollback becomes shrinking the window and
+   calling it more often, against machinery already proven by use.
+   Build rollback first and the same machinery arrives untested, in the
+   hardest configuration, with no way to tell a rollback bug from a
+   determinism bug. [inferred]
+
+3.  Packet layout
+
+   Not designed. Constrained by sections 1 and 2.
+
+4.  Handshake
+
+   Not designed. Constrained by 1.3.
+
+5.  Open questions
+
+   o Whether the shared non-player digital fields (service, tilt,
+     driver-internal) are carried as a small shared word or frozen at
+     handshake, and who may change them mid-session. They must be
+     covered either way - see 1.2.
+   o The logical input id enumeration. Deriving it from ioport_type
+     normalised to player 1 is the obvious approach, but the START and
+     COIN types break that normalisation (1.2), so the enumeration is
+     not simply a subrange of ioport_type.
+   o Analog. record_port carries m_accum, m_previous, m_sensitivity and
+     m_reverse per analog field. Sensitivity and reverse are local
+     configuration, so sending them every frame is wasteful, but NOT
+     sending them means a peer with different analog settings diverges.
+     Undecided.
+   o Whether the server relays the INPUT stream or only brokers the
+     session with peers connected directly. Relaying costs roughly 1.5x
+     the peer-to-peer round trip. Undecided. Separate question from
+     2.2, which is about the bulk plane only.
+   o ram_state size for CPS1, and the emulation speed multiple that
+     2.1 rests on. Both unmeasured; both are one-line measurements once
+     a build runs.
+   o Whether ram_state::save and load round-trip cleanly on the target
+     driver. Until that is known, resync is a design and not a plan -
+     see netplay-hooks.txt 8.
    o Desync detection: which subset of machine state to hash, how
      often, and whether the digest travels in the per-frame packet or
-     out of band. It has to exist BEFORE rollback - without it every
-     later bug is invisible.
-   o Input delay: fixed at join, or negotiated, or adaptive.
-   o Version gating. A peer built from a different commit is a
-     different emulator; the digest in 1.2 should make that
-     unrepresentable rather than merely detectable.
-   o Resync payload. ram_state's serialized form is the obvious
-     candidate, but its size for CPS1 is unmeasured - see
-     netplay-hooks.txt 6.
-   o Late join and spectators. Out of scope until lockstep works.
+     out of band. It has to exist BEFORE resync or rollback, because it
+     is the trigger for both (2.3).
+   o Input delay: fixed at join, negotiated, or adaptive.
+   o What K should be in 2.3, and whether it scales with session
+     length.
+   o Late join and spectators. A late joiner is a resync with M equal
+     to the whole session, so 2.1 and 2.2 cover it structurally. Out of
+     scope until lockstep works.

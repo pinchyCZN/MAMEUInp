@@ -45,7 +45,8 @@ Table of Contents
    | MAME version   | 0.210. makefile emits BARE_BUILD_VERSION        |
    |                | "0.210"                                         |
    +----------------+-------------------------------------------------+
-   | Toolchain      | MSVC 2017, toolset v141. Pin to 15.7.6          |
+   | Toolchain      | MSVC 2017, toolset v141. Installed here:        |
+   |                | 14.13.26128 = VS2017 15.6, which works          |
    +----------------+-------------------------------------------------+
    | Python         | 3.10.5 on PATH                                  |
    +----------------+-------------------------------------------------+
@@ -58,13 +59,48 @@ Table of Contents
    0.210 - the same emulation core, no winui. Anything learned there
    about driver behaviour transfers directly.
 
-   The 15.7.6 pin is MAME's own instruction for this release:
-   docs/source/initialsetup/compilingmame.rst states that MAME can only
-   be compiled with the Visual Studio 15.7.6 tools and that newer
-   versions have bugs. [upstream] Not independently tested here.
+   DO NOT CHASE THE 15.7.6 TOOLSET. MAME's own docs for this release
+   say "MAME can only be compiled with the Visual Studio 15.7.6 tools.
+   Bugs in newer versions of the Microsoft Visual C/C++ compiler
+   prevent it from compiling MAME." [upstream:
+   docs/source/initialsetup/compilingmame.rst]
+
+   Read carefully, that names NEWER compilers as the hazard, not older
+   ones - and MAME 0.210 demonstrably builds on 15.6. The CDINO tree is
+   the same MAME version, and its dino.exe carries linker version 14.13,
+   which is toolset 14.13.26128, VS2017 15.6 - also the only toolset
+   installed on this machine. [verified: PE optional header of
+   n:/DEV/CDINO/mame/dino.exe; VC/Tools/MSVC directory listing]
+
+   This gets a paragraph rather than a silent edit because the wrong
+   reading is one a future reader arrives at independently: the doc
+   sentence looks like an exact-version pin and is not one. Treat
+   15.7.6 as a CEILING that we are already under.
+
+1.1.  The host toolchain actually in use
+
+   There is no MSYS2 on this machine and no make on PATH. What works:
+
+       make    GNU Make 3.81 (2010), MSYS 1.0, at
+               e:/DEV/MinGW/msys/1.0/bin/make.exe - NOT on PATH,
+               invoke by full path. Its bin/ carries a full 153-utility
+               MSYS environment, which is what the recipes need.
+       genie   3rdparty/genie/bin/windows/genie.exe, copied from the
+               CDINO tree. Safe because the genie source trees of the
+               two 0.210 checkouts are byte-identical, same file set
+               (md5 2b35b12d9b4682ff55899ba308f6138c over content).
+               [verified]
+
+   genie.exe is gitignored by 3rdparty/genie/.gitignore ("bin"), so a
+   fresh clone will not have it. Either copy it again or build it with
+   the MinGW gcc beside that make. [verified]
+
+   MAME's docs say the MSYS2 environment is required to generate
+   project files. [upstream] MSYS 1.0 with make 3.81 was sufficient in
+   practice - the generate completes, see 2.1.
 
    makedep.py and makelist.py are both Python-3 clean - no bare print
-   statements. [verified]
+   statements. [verified] msgfmt.py is NOT; see 3.5.
 
 2.  The two builds
 
@@ -81,6 +117,21 @@ Table of Contents
 
    SUBTARGET=arcade builds the stock MAME arcade set instead. See
    coinop-subtarget.txt for what coinop removes.
+
+   CONFIRMED: this generates. "Done. Generated 394/394 projects.",
+   exit 0, with IGNORE_BAD_LOCALISATION=1 added for the reason in 3.5.
+   Nothing it writes is tracked - build/ and *.mo are both gitignored.
+   [verified]
+
+   The coinop filter is wired into the solution as a build step, so
+   the driver list is produced at COMPILE time, not generate time -
+   build/generated/mame/coinop/ is empty until then:
+
+       makelist.py ../../../../../src/mame/mame.lst \
+                   ../../../../../src/mame/coinop.flt \
+                 > ../../../../generated/mame/coinop/drivlist.cpp
+
+   [verified: mamecoinop.vcxproj]
 
    DEBUG_DIR and DEBUG_ARGS become debugdir() and debugargs() in
    scripts/src/main.lua, which genie writes into the .vcxproj.user as
@@ -146,8 +197,10 @@ Table of Contents
 
    It relies on MSVC's last-wins behaviour for /WX versus /WX-, since
    both land in AdditionalOptions and project scope is emitted after
-   solution scope. [inferred] Confirm in the generated
-   osd_winui.vcxproj.
+   solution scope. MEASURED in the generated osd_winui.vcxproj: /WX is
+   token 2 of AdditionalOptions and /WX- is token 73, so /WX- wins.
+   emu.vcxproj contains no /WX- at all, so core MAME keeps
+   warnings-as-errors as intended. [verified]
 
 3.3.  The winui entry point resolves to the wrong main
 
@@ -173,6 +226,11 @@ Table of Contents
    -municode. There is no MSVC counterpart in the upstream script.
    [verified]
 
+   MEASURED in the generated mamecoinop.vcxproj: no EntryPointSymbol
+   element is emitted at all, /ENTRY:wWinMainCRTStartup appears in
+   AdditionalOptions, and SubSystem is Windows - exactly one entry
+   point reaches the linker. [verified]
+
    flags { "WinMain" } alone is insufficient: it only suppresses
    genie's EntryPointSymbol, leaving MSVC's /SUBSYSTEM:WINDOWS default
    of WinMainCRTStartup, which wants ANSI WinMain. Setting both the
@@ -190,6 +248,27 @@ Table of Contents
    Same file, same function: a leading + force-adds an individual
    driver and a leading - removes one, which is how per-game exceptions
    are expressed. See coinop-subtarget.txt.
+
+3.5.  msgfmt.py is broken on Python 3.9 and later
+
+   scripts/build/msgfmt.py calls array.array.tostring(), which was
+   deprecated in Python 3.2 and REMOVED in 3.9. On Python 3.10.5 every
+   translation conversion dies with
+
+       AttributeError: 'array.array' object has no attribute 'tostring'
+
+   [verified]
+
+   Add IGNORE_BAD_LOCALISATION=1 to the make options. It is upstream's
+   own escape hatch - makefile appends "|| exit 0" to the msgfmt call -
+   and the cost is that MAME falls back to English. The CDINO tree has
+   the identical unpatched msgfmt.py and zero .mo files, so that build
+   never converted translations either and worked regardless.
+   [verified]
+
+   The one-line fix is tostring() -> tobytes(), available since Python
+   3.2. Not applied: it buys translated UI text at the price of another
+   upstream edit, and nothing depends on it yet.
 
 4.  Which MAME versions can build with MSVC 2017 at all
 
@@ -223,12 +302,14 @@ Table of Contents
 
 5.  Open questions
 
-   o No build has been attempted. Every item in section 3 is static
-     analysis, not a compiler result.
-   o Whether the /WX- ordering assumption in 3.2 holds in the
-     generated vcxproj. Unverified until we generate.
-   o Whether the 15.7.6 pin is actually required at 0.210 or only at
-     later tags. [upstream] claim, untested.
+   o NO COMPILE has been attempted. The generate succeeds and the
+     project files say what section 3 predicted, but items 3.1 and 3.4
+     and the <malloc.h> fix are only settled by an actual build.
+   o Whether DEBUG_DIR and DEBUG_ARGS actually take effect. They reach
+     genie - the makefile emits --DEBUG_DIR and --DEBUG_ARGS - and the
+     .user file's working directory resolves to the MAME root, but the
+     values passed were equal to the defaults so the two are
+     indistinguishable. Settle it by passing DEBUG_ARGS="-window dino".
    o _WIN32_WINNT=0x0501 in winui_cfg.lua targets Windows XP against a
      Windows 10 SDK. The define is there; the effect is unmeasured.
    o ram_state size and snapshot cost for CPS1 - unmeasured, and it

@@ -15,22 +15,30 @@ Abstract
    of them. We are wiring a network source into machinery that exists,
    not building it.
 
-   Determinism preconditions are in determinism.txt. The wire format
-   will be in protocol.txt, which is not written yet.
+   Determinism preconditions are in determinism.txt. The wire format is
+   protocol.txt. Citations name functions, not line numbers, because
+   lines drift across MAME tags.
 
 Table of Contents
 
    1. The input chokepoint
       1.1. Why this layer and not another
-      1.2. What the serialization looks like
+      1.2. The four ways input reaches a field
+      1.3. What is in digital, and what is not
+      1.4. Player attribution, and the START/COIN trap
+      1.5. Inject at the port; build the table from the fields
    2. Session base time
    3. Rollback primitives that already exist
       3.1. ram_state
       3.2. rewinder
       3.3. Savestate coverage is per driver
    4. Where the frontend fits
-   5. Files we expect to touch
-   6. Open questions
+   5. Session start: the screens and the NVRAM
+      5.1. Two startup screens, one option
+      5.2. NVRAM that needs a boot to initialise
+   6. What netplay has to disable
+   7. Files we expect to touch
+   8. Open questions
 
 1.  The input chokepoint
 
@@ -67,13 +75,182 @@ Table of Contents
    Choosing this layer is therefore not a preference. It is the only
    place where determinism is free.
 
-1.2.  What the serialization looks like
+   The 0.119 Kaillera build reached the same conclusion: its hook is in
+   src/emu/inptport.c, the direct ancestor of this file, immediately
+   around the same record/playback pass. [verified:
+   e:/DEV/mame32/119/src/emu/inptport.c, the kailleraModifyPlayValues
+   call site]
 
-   playback_port and record_port in the same file are the existing
-   model to copy: per port, the digital value, then each analog field's
-   state. Read them before designing the packet - the set of fields
-   that must travel is already enumerated there, and getting it wrong
-   produces a desync rather than a compile error. [verified]
+1.2.  The four ways input reaches a field
+
+   All of these converge inside ioport_field::frame_update, which is
+   what turns one field's state into a bit of the port's digital value.
+
+   +----------------+--------------------------------------------------+
+   | Path           | Mechanism                                        |
+   +================+==================================================+
+   | pull / poll    | machine().input().seq_pressed(seq()) - reads the |
+   |                | configured key or joystick sequence              |
+   +----------------+--------------------------------------------------+
+   | push           | ioport_field::set_value() sets m_digital_value,  |
+   |                | OR'd with the polled state:                      |
+   |                | curstate = m_digital_value || seq_pressed(...)   |
+   +----------------+--------------------------------------------------+
+   | dynamic read   | ioport_field_read_delegate m_read, declared by   |
+   |                | PORT_CUSTOM via field_set_dynamic_read. The      |
+   |                | DRIVER computes the value.                       |
+   +----------------+--------------------------------------------------+
+   | dynamic write  | ioport_field_write_delegate m_write,             |
+   |                | PORT_CHANGED_MEMBER. Outbound notice when a      |
+   |                | field changes; not an input source.              |
+   +----------------+--------------------------------------------------+
+
+   [verified: ioport.h for the delegate typedefs and set_value;
+   ioport.cpp for ioport_field::frame_update and
+   ioport_field::set_value]
+
+   PUSH AND POLL ARE NOT EQUIVALENT. The 4-way/8-way joystick
+   restriction is guarded by "curstate && !m_digital_value && ...", so a
+   pushed value BYPASSES the constraint a polled value obeys.
+   [verified] If netplay ever pushes through set_value rather than
+   overwriting the port, that difference is a desync between a pushing
+   peer and a polling one.
+
+   The dynamic-read path is not player input at all - it is the driver
+   reading its own state. Those fields must not be overwritten with
+   network data.
+
+1.3.  What is in digital, and what is not
+
+   record_port and playback_port work per PORT, not per field:
+
+       defvalue                  DIP switches, config settings, and
+                                 toggle state
+       digital                   EVERY digital field in the port, OR'd
+                                 together
+       per analog field          m_accum, m_previous, m_sensitivity,
+                                 m_reverse
+
+   [verified: ioport.cpp, ioport_manager::record_port and
+   ioport_manager::playback_port]
+
+   Two consequences.
+
+   First, PLAYER IDENTITY IS ALREADY GONE at this layer. digital is one
+   bitmask per port holding P1 buttons, P2 buttons, coins, service and
+   anything else the driver placed in that port. This is the reason the
+   wire format cannot simply be this structure - see 1.5 and
+   protocol.txt 1.
+
+   Second, transmitting defvalue syncs mid-game DIP changes for free,
+   because ioport_field::frame_update folds a toggle switch into the
+   port default (m_live->value ^= m_mask) rather than into digital.
+   [verified]
+
+   AND digital IS NARROWER THAN IT LOOKS. ioport_port::read() assembles
+   the value the driver sees in four stages:
+
+       result = m_live->digital;              // polled and pushed
+                                              // digital fields only
+       for (dynamic_field &d : readlist)
+           d.read(result);                    // PORT_CUSTOM, every read
+       result ^= m_live->defvalue;            // polarity and toggles
+       for (analog_field &a : analoglist)
+           a.read(result);                    // analog, every read
+
+   [verified: ioport.cpp, ioport_port::read]
+
+   So PORT_CUSTOM values and analog values are NEVER STORED IN digital.
+   They are recomputed from the driver and from analog_field state on
+   every single read. And ioport_port::frame_update opens with
+   m_live->digital = 0, so digital is rebuilt from scratch each frame
+   and holds nothing else. [verified]
+
+   That makes overwriting digital wholesale safe with respect to
+   PORT_CUSTOM and analog - it cannot clobber either. The residual risk
+   is narrower and different: a NON-PLAYER digital field, such as
+   service or tilt or a driver-internal digital bit, is in digital and
+   WOULD be zeroed by an overwrite that does not account for it. See
+   1.5.
+
+1.4.  Player attribution, and the START/COIN trap
+
+   ioport_field::type_class() classifies a field:
+
+   +--------------------------+---------------------------------------+
+   | Class                    | Contains                              |
+   +==========================+=======================================+
+   | INPUT_CLASS_CONTROLLER   | groups IPG_PLAYER1..IPG_PLAYER10 -    |
+   |                          | joysticks and buttons. Real player(). |
+   +--------------------------+---------------------------------------+
+   | INPUT_CLASS_MISC         | IPG_OTHER - coins, start, service,    |
+   |                          | tilt                                  |
+   +--------------------------+---------------------------------------+
+   | INPUT_CLASS_DIPSWITCH    | IPT_DIPSWITCH                         |
+   +--------------------------+---------------------------------------+
+   | INPUT_CLASS_CONFIG       | IPT_CONFIG                            |
+   +--------------------------+---------------------------------------+
+   | INPUT_CLASS_KEYBOARD     | IPT_KEYPAD, IPT_KEYBOARD              |
+   +--------------------------+---------------------------------------+
+   | INPUT_CLASS_INTERNAL     | everything anonymous                  |
+   +--------------------------+---------------------------------------+
+
+   [verified: ioport.cpp, ioport_field::type_class; ioport.h for
+   ioport_group]
+
+   THE TRAP: start and coin are declared in IPG_OTHER with PLAYER 0.
+   From src/emu/inpttype.h:
+
+       INPUT_PORT_DIGITAL_TYPE( 0, OTHER,   START1, "1 Player Start" )
+       INPUT_PORT_DIGITAL_TYPE( 0, OTHER,   COIN1,  "Coin 1"         )
+       INPUT_PORT_DIGITAL_TYPE( 1, PLAYER1, JOYSTICK_UP, "P1 Up"     )
+       INPUT_PORT_DIGITAL_TYPE( 2, PLAYER2, BUTTON1, "P2 Button 1"   )
+
+   [verified]
+
+   So field.player() returns 0 for START1 and COIN1. Routing start and
+   coin by player() silently sends every player's start to player 1.
+   For those types the player is encoded in the TYPE - IPT_START2,
+   IPT_COIN2 - which means the routing table needs two rules, not one.
+
+   The same file confirms why translation is needed at all: the default
+   sequences are disjoint per player. P1 Up is KEYCODE_UP and P2 Up is
+   KEYCODE_R; P1 Button 1 is KEYCODE_LCONTROL and P2 Button 1 is
+   KEYCODE_A. [verified]
+
+1.5.  Inject at the port; build the table from the fields
+
+   These are two different layers and conflating them is the mistake to
+   avoid.
+
+   INJECT at the port level, where playback_port overwrites digital.
+   1.3 establishes that this is safe for PORT_CUSTOM and analog, so the
+   injection can be a plain write of digital rather than a masked
+   read-modify-write. What it must not do is write zero to a digital
+   field nobody owns: every digital field in every port is either in
+   the translation table, or explicitly accounted for as shared or
+   host-owned state. A field in neither set is a bug.
+
+   Everything ioport_field::frame_update did locally is then discarded
+   on the receiving side, and that is a feature: autofire (which owns a
+   frame counter in m_live->autopressed), coin impulse (driven by the
+   coin_impulse option), coin lockout via
+   machine().bookkeeping().coin_lockout_get_state(), the 4-way
+   restriction, and the is_menu_active() early-out are all local state
+   and local options sitting between a keypress and the port value.
+   [verified: ioport_field::frame_update] Overwriting after them
+   neutralises the whole category as a desync source.
+
+   BUILD THE TRANSLATION TABLE from field metadata, once at session
+   start, because player() and type() exist there and are gone by the
+   time digital is assembled. Translating at the injection point means
+   un-mixing a bitmask to recover information that was available one
+   call earlier.
+
+   The 0.119 Kaillera build did exactly this - it builds its mapping
+   table at game start by walking the port list. [verified:
+   e:/DEV/mame32/119/src/emu/inptport.c] The shape of that table is
+   protocol.txt 1.2.
 
 2.  Session base time
 
@@ -87,8 +264,8 @@ Table of Contents
 
    [verified: ioport.cpp]
 
-   The server picks the session base time and broadcasts it at join.
-   We substitute a network source for the .inp header; the path that
+   The server picks the session base time and broadcasts it. We
+   substitute a network source for the .inp header; the path that
    applies it already exists and is exercised by every .inp playback.
 
 3.  Rollback primitives that already exist
@@ -169,7 +346,89 @@ Table of Contents
    The entry-point hazard this creates for MSVC builds is a build
    matter, not a netplay one - see build-config.txt.
 
-5.  Files we expect to touch
+5.  Session start: the screens and the NVRAM
+
+5.1.  Two startup screens, one option
+
+   mame_ui_manager::display_startup_screens runs up to three modal
+   states. The flags that gate them:
+
+       bool show_gameinfo = !machine().options().skip_gameinfo();
+       bool show_warnings = true, show_mandatory_fileman = false;
+
+   [verified: src/frontend/mame/ui/ui.cpp]
+
+   -skip_gameinfo GATES ONLY THE SECOND SCREEN. The "this game does not
+   work properly, type OK to continue" screen is state 0,
+   machine_info::warnings_string(), and show_warnings is hardcoded true
+   with no option behind it. It is suppressed only by !first_time, a
+   -seconds_to_run under 300, the empty driver, or the debugger being
+   enabled. [verified]
+
+   So a netplay session has to force show_warnings false itself. There
+   is precedent on that exact line: show_mandatory_fileman is already
+   hardcoded false with a "//true; //MESSUI" comment, i.e. Robbbert
+   edited it for MAMEUI. [verified]
+
+   Suppress both, and not only for convenience. The screens are modal
+   handlers that consume frames while the machine schedules, so the
+   frame at which real input starts flowing otherwise depends on when
+   each player happens to press a key.
+
+5.2.  NVRAM that needs a boot to initialise
+
+   Some drivers require one boot to initialise NVRAM or EEPROM, show a
+   fault, and need a reset before they play.
+
+   THERE IS NOTHING SPECIAL TO DO HERE, and that is worth stating
+   because the 0.119 Kaillera build did have a workaround. Determinism
+   already requires NVRAM to be byte-identical across peers
+   (determinism.txt 4). Once the handshake enforces that, the
+   initialising boot is simply the first few thousand frames of the
+   synced session - every peer performs it together, and the reset is a
+   synced input like any other.
+
+   The only decision left is whether a session starts from a canonical
+   shipped NVRAM or from empty. Either works; both must be verified by
+   hash rather than assumed. [inferred]
+
+6.  What netplay has to disable
+
+   +---------------------+----------------------------------------------+
+   | Disable             | Why                                          |
+   +=====================+==============================================+
+   | pause               | m_paused gates the run loop in               |
+   |                     | running_machine, so a local pause stalls     |
+   |                     | that peer and therefore lockstep for         |
+   |                     | everyone. [verified: machine.cpp]            |
+   +---------------------+----------------------------------------------+
+   | frameskip           | it perturbs emulated state on several        |
+   |                     | drivers - determinism.txt 3. Not merely a    |
+   |                     | pacing setting.                              |
+   +---------------------+----------------------------------------------+
+   | savestate load      | silently replaces the machine state under    |
+   |                     | one peer                                     |
+   +---------------------+----------------------------------------------+
+   | throttle, -speed    | pacing only, but a peer running unthrottled  |
+   |                     | starves the others of wall-clock budget      |
+   +---------------------+----------------------------------------------+
+   | the startup screens | 5.1                                          |
+   +---------------------+----------------------------------------------+
+
+   UI INPUT ITSELF DOES NOT NEED BLOCKING. IPT_UI_* types are in
+   IPG_UI, are not part of any port's digital state, and are read
+   through machine().ui_input() rather than the port path. [verified]
+   So UI keys never travel and never touch emulated state; what has to
+   be disabled is the ACTIONS above, not the input path. Chat can
+   therefore live on the UI path.
+
+   One quirk: ioport_field::frame_update bails out early on
+   machine().ui().is_menu_active(), so opening a menu zeroes that
+   peer's own digital input. Harmless once the port is overwritten from
+   the network, but it means the menu eats local input rather than
+   overlaying it. [verified]
+
+7.  Files we expect to touch
 
    Kept in one place so the rebase list stays honest. The authoritative
    record of what has ACTUALLY changed is upstream-edits.txt; this is
@@ -188,6 +447,9 @@ Table of Contents
    +---------------------------+---------------------------------------+
    | src/emu/emuopts.cpp / .h  | -netplay* options                     |
    +---------------------------+---------------------------------------+
+   | src/frontend/mame/ui/     | show_warnings, section 5.1            |
+   | ui.cpp                    |                                       |
+   +---------------------------+---------------------------------------+
    | src/osd/winui/winui.cpp   | lobby UI, play_options, section 4     |
    +---------------------------+---------------------------------------+
 
@@ -197,7 +459,7 @@ Table of Contents
    needs a genie project, a link edge in main.lua and an include path
    into src/emu: three upstream edits instead of one. [inferred]
 
-6.  Open questions
+8.  Open questions
 
    o Whether rewinder's eviction policy fits frame-granular rollback,
      or whether we want our own ring over ram_state. Untested.
@@ -205,10 +467,13 @@ Table of Contents
      per-frame snapshotting is viable at 60 Hz.
    o Whether ram_state round-trips cleanly on CPS1 with Q-Sound
      present. Untested.
-   o Exact field set that must travel per port. Read playback_port and
-     record_port and write it into protocol.txt.
-   o Whether the server should relay the input stream or only broker
-     the session, with peers connected directly. Relaying through the
+   o Which non-player digital fields exist per driver, and who owns
+     them. 1.3 narrowed the problem to this: service, tilt and
+     driver-internal digital bits live in digital and would be zeroed
+     by an unaccounted overwrite. Enumerable from the port walk that
+     builds the table; not yet enumerated for any driver.
+   o Whether the server relays the input stream or only brokers the
+     session, with peers connected directly. Relaying through the
      server costs roughly 1.5x the peer-to-peer round trip. Undecided.
    o Desync detection: which subset of state to hash, and how often.
      Nothing designed yet. It has to exist before rollback, or every

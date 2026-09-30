@@ -183,5 +183,10 @@ Table of Contents
    o Whether the VS2017 15.7.6 toolset pin is actually required at
      0.210 or only for later tags. MAME's own docs for this release say
      newer 2017 toolsets have bugs; not tested here. [upstream]
-   o No build has been attempted yet. Every item in section 1 is a
-     static-analysis fix, not a fix confirmed by a compiler.
+   o No COMPILE has been attempted. Items 1, 2 and 3 are confirmed in
+     the generated project files - see build-config.txt 3.2 and 3.3 -
+     but item 4, the <malloc.h> fix, is only settled by a build.
+   o 3rdparty/genie/bin/windows/genie.exe was copied in from the CDINO
+     tree. Gitignored by 3rdparty/genie/.gitignore, so not an edit to
+     track, but a fresh clone will not have it. See build-config.txt
+     1.1.

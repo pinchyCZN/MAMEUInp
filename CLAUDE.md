@@ -348,7 +348,7 @@ Facts that govern every build command. Detail in `notes/build-config.txt`.
 | | |
 |---|---|
 | Version | MAMEUI 0.210, upstream commit `83deae72` "0.210 Release files", 2019-05-29 |
-| Toolchain | MSVC 2017, toolset `v141`. Pin to **15.7.6**; newer 2017 toolsets have bugs - `compilingmame.rst:107` |
+| Toolchain | MSVC 2017 `v141`. `14.13.26128` (15.6) installed and works - `build-config.txt` 1 |
 | Python | 3.10.5 on PATH. `makedep.py` and `makelist.py` are both py3-clean |
 | OSD | `OSD=winui` (MAMEUI frontend). `OSD=messui` is the MESS variant |
 | Driver set | `SUBTARGET=coinop` - arcade minus mechanical. `SUBTARGET=arcade` for stock |

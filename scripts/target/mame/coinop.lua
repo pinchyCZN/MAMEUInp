@@ -784,7 +784,7 @@ FORMATS["BASICDSK"] = true
 -- the list of drivers
 --------------------------------------------------
 
-function linkProjects_mame_arcade(_target, _subtarget)
+function linkProjects_mame_coinop(_target, _subtarget)
 	links {
 		"acorn",
 		"adp",

@@ -82,6 +82,19 @@ Table of Contents
    erroring if it is absent - and calls
    createProjects_mame_<subtarget>. [verified]
 
+   A SUBTARGET SCRIPT HAS TWO ENTRY POINTS, NOT ONE. arcade.lua defines
+   both createProjects_mame_arcade and linkProjects_mame_arcade, and
+   scripts/src/main.lua calls the link one from mainProject. Rename only
+   the first and generation dies at
+
+       scripts/src/main.lua:NNN: attempt to call a nil value
+
+   which names main.lua rather than the subtarget script, so it does not
+   point at the actual mistake. Lua resolves the name at call time, so
+   there is no parse error and no warning. gen_coinop.py renames both
+   and asserts both exist plus no stale mame_arcade reference remains.
+   [verified]
+
    SO BOTH FILES ARE REQUIRED, AND THEY DO DIFFERENT JOBS:
 
        the .flt   decides which drivers reach drivlist.cpp
@@ -250,7 +263,10 @@ Table of Contents
      SOUNDS tables - MACHINES["GENPIN"] among them. Harmless, a small
      amount of device code. Deliberately left until there is a
      known-good build to compare against.
-   o No build has been attempted with SUBTARGET=coinop. The filter and
-     the target script are validated against makelist.py only.
+   o No COMPILE has been attempted with SUBTARGET=coinop. Generation
+     succeeds - 394/394 projects - and the solution wires the filter as
+     a build step, but the driver list is only produced at compile
+     time, so an unresolved GAME_EXTERN would not surface until then.
+     See build-config.txt 2.1.
    o Whether any driver in the coinop set pulls in a nondeterministic
      device - see determinism.txt 2.3. Unchecked.

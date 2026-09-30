@@ -96,9 +96,15 @@ def build(drop):
         if m and m.group(1) in drop:
             continue
         kept.append(l)
+    # BOTH entry points must be renamed. main.lua calls
+    # createProjects_mame_<subtarget> AND linkProjects_mame_<subtarget>;
+    # missing the second one fails at generate time with
+    # "attempt to call a nil value", not at parse time.
     banner = "--   MAME target makefile"
     kept = [l.replace("createProjects_mame_arcade",
                       "createProjects_mame_coinop")
+             .replace("linkProjects_mame_arcade",
+                      "linkProjects_mame_coinop")
              .replace(banner, banner + " (coinop: arcade minus mech)")
             for l in kept]
     return flt, nl2.join(kept)
@@ -130,6 +136,9 @@ def main():
         io.open(path, "w", encoding="utf-8", newline="").write(data)
         print("  wrote %s" % os.path.relpath(path, ROOT))
 
+    for fn in ("createProjects_mame_coinop", "linkProjects_mame_coinop"):
+        assert ("function %s(" % fn) in lua, "missing entry point: " + fn
+    assert "mame_arcade" not in lua, "stale mame_arcade reference remains"
     n = len([l for l in flt.split(chr(10))
              if re.match(r"^[a-z0-9_]+\.cpp$", l.strip())])
     print("coinop.flt: %d driver entries" % n)
