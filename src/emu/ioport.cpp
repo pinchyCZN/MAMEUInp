@@ -2032,6 +2032,12 @@ void ioport_manager::frame_update()
 {
 g_profiler.start(PROFILER_INPUT);
 
+	// NETPLAY: hold this frame until the input for it has arrived. Must be
+	// the first thing in the frame: a lockstep frame has to be held BEFORE
+	// it starts, not patched part-way through the port loop.
+	// No-ops unless a session is running.
+	netplay::manager::frame_begin(machine());
+
 	// record/playback information about the current frame
 	attotime curtime = machine().time();
 	playback_frame(curtime);
