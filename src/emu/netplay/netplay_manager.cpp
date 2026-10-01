@@ -10,7 +10,8 @@
 
 #include "emu.h"
 #include "netplay/netplay_manager.h"
-#include "netplay/netplay_simlink.h"
+#include "netplay/netplay_hash.h"
+#include "netplay/netplay_transport.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -195,7 +196,8 @@ void manager::open_session(running_machine &machine)
 
 	const bool is_loopback = (std::strcmp(mode, "loopback") == 0);
 	const bool is_simlink = (std::strcmp(mode, "simlink") == 0);
-	if (!is_loopback && !is_simlink)
+	const bool is_udp = (std::strcmp(mode, "udp") == 0);
+	if (!is_loopback && !is_simlink && !is_udp)
 		return;
 
 	player_t players = player_t(env_uint("NETPLAY_PLAYERS", is_simlink ? 2 : 1));
@@ -230,12 +232,45 @@ void manager::open_session(running_machine &machine)
 			echo_as = 0;
 	}
 
-	std::unique_ptr<transport> link(new simlink(
-			env_uint("NETPLAY_SIM_DELAY", 0),
-			env_uint("NETPLAY_SIM_JITTER", 0),
-			env_uint("NETPLAY_SIM_LOSS", 0),
-			echo_as,
-			env_uint("NETPLAY_SIM_SEED", 1)));
+	std::unique_ptr<transport> link;
+
+	if (is_udp)
+	{
+		// The slot comes from configuration, not from the handshake. Waiting
+		// for a WELCOME would mean blocking the main thread before the first
+		// frame, and that wedges window creation - see netplay_transport.h.
+		// The server still validates and can refuse; the refusal is reported
+		// when it arrives.
+		inputmap probe;
+		if (!probe.build(machine))
+		{
+			osd_printf_error("netplay: %s cannot be represented; not joining\n",
+					machine.system().name);
+			return;
+		}
+
+		const char *host = std::getenv("NETPLAY_HOST");
+		if (unset(host))
+			host = "127.0.0.1";
+
+		std::unique_ptr<udp_link> net(new udp_link);
+		if (!net->open(host, env_uint("NETPLAY_PORT", 7000)))
+			return;
+
+		net->identify(machine.system().name, probe.digest(),
+				savestate_layout_hash(machine), players);
+
+		link = std::move(net);
+	}
+	else
+	{
+		link.reset(new simlink(
+				env_uint("NETPLAY_SIM_DELAY", 0),
+				env_uint("NETPLAY_SIM_JITTER", 0),
+				env_uint("NETPLAY_SIM_LOSS", 0),
+				echo_as,
+				env_uint("NETPLAY_SIM_SEED", 1)));
+	}
 
 	std::unique_ptr<manager> candidate(new manager(machine, local, players,
 			delay, batch, env_flag("NETPLAY_REDUNDANCY"),
@@ -423,6 +458,13 @@ void manager::wait_for_input()
 	// chosen for. notes/protocol.txt 1.6.3
 	m_stalls++;
 
+	// Frame 0 is a different problem from every other frame: the peers are
+	// still launching, so the first wait is seconds rather than milliseconds.
+	// One limit cannot serve both, so the budget is generous until the first
+	// remote packet has ever arrived and tight afterwards.
+	const unsigned limit = (m_link && (m_link->recv_count() == 0))
+			? JOIN_STALL_LIMIT : STALL_LIMIT;
+
 	unsigned spins = 0;
 	while (!complete(m_frame))
 	{
@@ -430,7 +472,7 @@ void manager::wait_for_input()
 			break;
 		poll_link();
 		m_stall_frames++;
-		if (++spins >= STALL_LIMIT)
+		if (++spins >= limit)
 			break;
 	}
 

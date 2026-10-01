@@ -17,6 +17,21 @@
 
 #pragma once
 
+// MAME supplies u8..u64 through emu.h, which every file under src/emu
+// includes first. The relay server in server/ compiles this same header
+// and netplay_packet.cpp WITHOUT MAME, so the types are defined here when
+// NETPLAY_STANDALONE is set. One definition of the wire format shared by
+// two programs - a second copy is how two builds come to disagree.
+#ifdef NETPLAY_STANDALONE
+#include <cstddef>
+#include <cstdint>
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int32_t  s32;
+#endif
+
 
 namespace netplay {
 

@@ -151,6 +151,70 @@ bool parse_header(const u8 *buf, size_t len, packet_header &head);
 bool parse_input(const u8 *buf, size_t len, packet_header &head,
 		input_word *words, unsigned max_words, u64 &hash, bool &has_hash);
 
+// ---- control packets ----
+//
+// Everything that is not INPUT. nframes and player_mask are 0, so these
+// cannot be confused with an input packet, and the payload layout is per
+// type. notes/protocol.txt 3.3, 4.1
+
+// notes/protocol.txt 4.2 lists nine digests the handshake should carry.
+// Two are implemented: the translation table, because peers that route
+// (player, logical) differently misroute each other's input while agreeing
+// on everything else, and the save-state layout, because it catches a
+// different binary, driver, device configuration or MAME version in one
+// comparison. The other seven - bios, dipsw, nvram, perf - are [open].
+struct join_payload
+{
+	u64     inputmap;
+	u64     layout;
+	u8      want_players;
+	char    driver[14];        // NUL-padded, not NUL-terminated
+};
+
+struct welcome_payload
+{
+	u8      slot;              // 1-based
+	u8      players;
+	frame_t start_frame;
+};
+
+constexpr size_t JOIN_BYTES = HEADER_BYTES + 32;
+constexpr size_t WELCOME_BYTES = HEADER_BYTES + 8;
+constexpr size_t REFUSE_BYTES = HEADER_BYTES + 4;
+constexpr size_t START_BYTES = HEADER_BYTES + 4;
+
+size_t build_join(u8 *buf, size_t cap, const join_payload &p);
+bool parse_join(const u8 *buf, size_t len, join_payload &p);
+
+size_t build_welcome(u8 *buf, size_t cap, u16 session,
+		const welcome_payload &p);
+bool parse_welcome(const u8 *buf, size_t len, u16 &session,
+		welcome_payload &p);
+
+size_t build_refuse(u8 *buf, size_t cap, u8 reason);
+size_t build_start(u8 *buf, size_t cap, u16 session, frame_t start_frame);
+bool parse_start(const u8 *buf, size_t len, frame_t &start_frame);
+
+// 4.4. Naming the field that mismatched is the point: a generic refusal
+// makes the user compare an entire configuration by hand.
+enum refuse_reason : u8
+{
+	REFUSE_VERSION  = 0x01,
+	REFUSE_BUILD    = 0x02,
+	REFUSE_DRIVER   = 0x03,
+	REFUSE_BIOS     = 0x04,
+	REFUSE_DIPSW    = 0x05,
+	REFUSE_INPUTCFG = 0x06,
+	REFUSE_NVRAM    = 0x07,
+	REFUSE_LAYOUT   = 0x08,
+	REFUSE_PERF     = 0x09,
+	REFUSE_FULL     = 0x0a,
+	REFUSE_RUNNING  = 0x0b,
+	REFUSE_TOOWIDE  = 0x0c
+};
+
+const char *refuse_text(u8 reason);
+
 // Bytes an INPUT packet of this shape occupies.
 inline size_t input_bytes(unsigned nframes, u8 player_mask, bool hash)
 {

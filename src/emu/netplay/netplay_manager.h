@@ -79,6 +79,11 @@ private:
 	// rather than hidden. [open]
 	static constexpr unsigned STALL_LIMIT = 240;
 
+	// Waiting for the other peer's process to finish launching is a wait
+	// of seconds, not milliseconds, and it happens exactly once. udp_link
+	// waits a millisecond at a time, so this is about 20 s.
+	static constexpr unsigned JOIN_STALL_LIMIT = 20000;
+
 	struct slot
 	{
 		frame_t     stamp;      // which frame these words belong to

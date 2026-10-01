@@ -38,6 +38,19 @@
 
 // ======================> netplay_state_hash
 
+namespace netplay {
+
+// Fingerprint of the save state's SHAPE - entry count, and every
+// entry's name, element size and element count. Two peers with
+// different values are not running the same machine, which is why the
+// handshake carries it (notes/protocol.txt 4.2). A free function
+// because both the per-frame hash and the JOIN packet need it and a
+// second implementation is how two peers come to disagree.
+u64 savestate_layout_hash(running_machine &machine);
+
+} // namespace netplay
+
+
 class netplay_state_hash
 {
 public:

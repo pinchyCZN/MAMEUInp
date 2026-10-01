@@ -8,7 +8,9 @@
 
 ***************************************************************************/
 
+#ifndef NETPLAY_STANDALONE
 #include "emu.h"
+#endif
 #include "netplay/netplay_packet.h"
 
 
@@ -124,6 +126,156 @@ bool parse_input(const u8 *buf, size_t len, packet_header &head,
 		hash = get_u64(p);
 
 	return true;
+}
+
+//-------------------------------------------------
+//  control packets
+//
+//  nframes and player_mask are left 0, which is what distinguishes a
+//  control packet from an input one and is why build_input rejects those
+//  values.
+//-------------------------------------------------
+
+namespace {
+
+size_t control_head(u8 *buf, size_t cap, u8 type, u16 session,
+		frame_t base_frame, size_t payload)
+{
+	if ((buf == nullptr) || ((HEADER_BYTES + payload) > cap))
+		return 0;
+	put_u8(buf + 0, type);
+	put_u8(buf + 1, PROTOCOL_VERSION);
+	put_u16(buf + 2, session);
+	put_u32(buf + 4, base_frame);
+	put_u8(buf + 8, 0);
+	put_u8(buf + 9, 0);
+	put_u8(buf + 10, 0);
+	put_u8(buf + 11, 0);
+	return HEADER_BYTES + payload;
+}
+
+} // anonymous namespace
+
+
+size_t build_join(u8 *buf, size_t cap, const join_payload &p)
+{
+	const size_t len = control_head(buf, cap, MSG_JOIN, 0, 0, 32);
+	if (len == 0)
+		return 0;
+
+	u8 *const q = buf + HEADER_BYTES;
+	put_u64(q + 0, p.inputmap);
+	put_u64(q + 8, p.layout);
+	put_u8(q + 16, p.want_players);
+	put_u8(q + 17, 0);
+	for (unsigned i = 0; i < sizeof(p.driver); i++)
+		q[18 + i] = u8(p.driver[i]);
+	return len;
+}
+
+
+bool parse_join(const u8 *buf, size_t len, join_payload &p)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_JOIN))
+		return false;
+	if (len != JOIN_BYTES)
+		return false;
+
+	const u8 *const q = buf + HEADER_BYTES;
+	p.inputmap = get_u64(q + 0);
+	p.layout = get_u64(q + 8);
+	p.want_players = get_u8(q + 16);
+	for (unsigned i = 0; i < sizeof(p.driver); i++)
+		p.driver[i] = char(q[18 + i]);
+	return true;
+}
+
+
+size_t build_welcome(u8 *buf, size_t cap, u16 session, const welcome_payload &p)
+{
+	const size_t len = control_head(buf, cap, MSG_WELCOME, session, 0, 8);
+	if (len == 0)
+		return 0;
+
+	u8 *const q = buf + HEADER_BYTES;
+	put_u8(q + 0, p.slot);
+	put_u8(q + 1, p.players);
+	put_u16(q + 2, 0);
+	put_u32(q + 4, p.start_frame);
+	return len;
+}
+
+
+bool parse_welcome(const u8 *buf, size_t len, u16 &session, welcome_payload &p)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_WELCOME))
+		return false;
+	if (len != WELCOME_BYTES)
+		return false;
+
+	session = head.session;
+	const u8 *const q = buf + HEADER_BYTES;
+	p.slot = get_u8(q + 0);
+	p.players = get_u8(q + 1);
+	p.start_frame = get_u32(q + 4);
+	return true;
+}
+
+
+size_t build_refuse(u8 *buf, size_t cap, u8 reason)
+{
+	const size_t len = control_head(buf, cap, MSG_REFUSE, 0, 0, 4);
+	if (len == 0)
+		return 0;
+	put_u8(buf + HEADER_BYTES + 0, reason);
+	put_u8(buf + HEADER_BYTES + 1, 0);
+	put_u16(buf + HEADER_BYTES + 2, 0);
+	return len;
+}
+
+
+size_t build_start(u8 *buf, size_t cap, u16 session, frame_t start_frame)
+{
+	const size_t len = control_head(buf, cap, MSG_START, session, start_frame, 4);
+	if (len == 0)
+		return 0;
+	put_u32(buf + HEADER_BYTES, start_frame);
+	return len;
+}
+
+
+bool parse_start(const u8 *buf, size_t len, frame_t &start_frame)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_START))
+		return false;
+	if (len != START_BYTES)
+		return false;
+	start_frame = get_u32(buf + HEADER_BYTES);
+	return true;
+}
+
+
+const char *refuse_text(u8 reason)
+{
+	switch (reason)
+	{
+	case REFUSE_VERSION:  return "protocol version mismatch";
+	case REFUSE_BUILD:    return "different binary";
+	case REFUSE_DRIVER:   return "different system or ROM set";
+	case REFUSE_BIOS:     return "different -bios";
+	case REFUSE_DIPSW:    return "DIP or config settings differ";
+	case REFUSE_INPUTCFG: return "translation tables differ";
+	case REFUSE_NVRAM:    return "NVRAM or EEPROM differs";
+	case REFUSE_LAYOUT:   return "savestate layout differs";
+	case REFUSE_PERF:     return "frameskip, cheat or drc differs";
+	case REFUSE_FULL:     return "no free player slot";
+	case REFUSE_RUNNING:  return "session already started";
+	case REFUSE_TOOWIDE:  return "driver needs more than 64 bits per player";
+	default:              return "unknown reason";
+	}
 }
 
 } // namespace netplay

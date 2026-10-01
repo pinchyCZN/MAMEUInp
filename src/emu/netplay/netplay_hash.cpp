@@ -127,9 +127,11 @@ netplay_state_hash::netplay_state_hash(running_machine &machine, const char *log
 //  state's SHAPE, not its contents
 //-------------------------------------------------
 
-u64 netplay_state_hash::compute_layout_hash() const
+namespace netplay {
+
+u64 savestate_layout_hash(running_machine &machine)
 {
-	save_manager &save = m_machine.save();
+	save_manager &save = machine.save();
 	const int count = save.registration_count();
 
 	u64 h = MIX_SEED;
@@ -139,7 +141,7 @@ u64 netplay_state_hash::compute_layout_hash() const
 	{
 		void *base = nullptr;
 		u32 valsize = 0, valcount = 0;
-		const char *name = save.indexed_item(i, base, valsize, valcount);
+		const char *const name = save.indexed_item(i, base, valsize, valcount);
 		if (name == nullptr)
 			continue;
 
@@ -151,6 +153,13 @@ u64 netplay_state_hash::compute_layout_hash() const
 	return finalise(h);
 }
 
+} // namespace netplay
+
+
+u64 netplay_state_hash::compute_layout_hash() const
+{
+	return netplay::savestate_layout_hash(m_machine);
+}
 
 //-------------------------------------------------
 //  state_hash - fingerprint of the save state's
