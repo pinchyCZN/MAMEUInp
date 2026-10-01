@@ -62,6 +62,9 @@ const options_entry emu_options::s_option_entries[] =
 	{ nullptr,                                           nullptr,     OPTION_HEADER,     "CORE STATE/PLAYBACK OPTIONS" },
 	{ OPTION_STATE,                                      nullptr,     OPTION_STRING,     "saved state to load" },
 	{ OPTION_AUTOSAVE,                                   "0",         OPTION_BOOLEAN,    "automatically restore state on start and save on exit for supported systems" },
+	// NETPLAY
+	{ OPTION_NETPLAY_HASHLOG,                            nullptr,     OPTION_STRING,     "log a per-frame hash of emulated state to this file (desync detection)" },
+	{ OPTION_NETPLAY_HASHINTERVAL "(1-3600)",            "1",         OPTION_INTEGER,    "hash every Nth frame; raise it for drivers with very large save states" },
 	{ OPTION_REWIND,                                     "0",         OPTION_BOOLEAN,    "enable rewind savestates" },
 	{ OPTION_REWIND_CAPACITY "(1-2048)",                 "100",       OPTION_INTEGER,    "rewind buffer size in megabytes" },
 	{ OPTION_PLAYBACK ";pb",                             nullptr,     OPTION_STRING,     "playback an input file" },

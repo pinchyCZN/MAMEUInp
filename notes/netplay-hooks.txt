@@ -463,10 +463,10 @@ Table of Contents
 
    o Whether rewinder's eviction policy fits frame-granular rollback,
      or whether we want our own ring over ram_state. Untested.
-   o ram_state::get_size for CPS1 - unmeasured. It decides whether
-     per-frame snapshotting is viable at 60 Hz.
-   o Whether ram_state round-trips cleanly on CPS1 with Q-Sound
-     present. Untested.
+   o Measured, no longer open: ram_state is 445 KB on CPS1 (dino) and
+     round-trips cleanly - an -autosave run reloaded and re-saved with
+     no error. Sizes across nine drivers, and what they mean for
+     per-frame snapshotting, are protocol.txt 2.4 and 2.5.
    o Which non-player digital fields exist per driver, and who owns
      them. 1.3 narrowed the problem to this: service, tilt and
      driver-internal digital bits live in digital and would be zeroed

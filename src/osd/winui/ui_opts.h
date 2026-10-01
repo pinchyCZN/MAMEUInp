@@ -156,7 +156,7 @@ const WINUIOPTS option_entries[] =
 	{ MUIOPTION_CLONE_COLOR,                  "-1",       OPTION_INTEGER,                 NULL },
 	{ MUIOPTION_CUSTOM_COLOR,                 "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0", OPTION_STRING, NULL }, // colour codes of the 16 custom colours (set in clone font dialog)
 	/* ListMode needs to be before ColumnWidths settings */
-	{ MUIOPTION_LIST_MODE,                    "5",       OPTION_INTEGER,                 NULL },
+	{ MUIOPTION_LIST_MODE,                    "4",       OPTION_INTEGER,                 NULL },   // NETPLAY: was "5" = VIEW_MAX, one past the last valid view (picker.h). Harmless only because Picker_SetViewMode has default: LVS_REPORT, but it made picker.cpp's "== VIEW_GROUPED" clone-nesting test false, so a fresh install got Details and Grouped was unreachable as a default. 4 = VIEW_GROUPED.
 	{ MUIOPTION_SPLITTERS,                    MUIDEFAULT_SPLITTERS, OPTION_STRING,       NULL },
 	{ MUIOPTION_LIST_FONT,                    "-11,0,0,0,400,0,0,0,0,1,2,1,34,MS Sans Serif", OPTION_STRING, NULL },
 	{ MUIOPTION_COLUMN_WIDTHS,                "185,78,84,84,64,88,74,108,60,144,84,40,40", OPTION_STRING, NULL },

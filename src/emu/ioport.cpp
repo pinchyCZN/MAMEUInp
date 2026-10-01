@@ -91,6 +91,7 @@
 ***************************************************************************/
 
 #include "emu.h"
+#include "netplay/netplay_hash.h"   // NETPLAY
 #include "emuopts.h"
 #include "config.h"
 #include "xmlfile.h"
@@ -2065,6 +2066,12 @@ g_profiler.start(PROFILER_INPUT);
 			if (dynfield.field().type() != IPT_OUTPUT)
 				dynfield.write(newvalue);
 	}
+
+	// NETPLAY: fingerprint machine state once per frame, after input for the
+	// frame has been applied - the same point netplay will inject at, so the
+	// hash is taken at an identical place on every peer. No-ops unless
+	// -netplay_hashlog is set. See src/emu/netplay/netplay_hash.h.
+	netplay_state_hash::frame_update(machine());
 
 g_profiler.stop();
 }

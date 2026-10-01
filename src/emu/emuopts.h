@@ -51,6 +51,12 @@
 // core state/playback options
 #define OPTION_STATE                "state"
 #define OPTION_AUTOSAVE             "autosave"
+// NETPLAY: desync detection instrumentation. See src/emu/netplay/ and
+// notes/protocol.txt - the state hash is the trigger for both resync and
+// rollback, so it has to exist before either.
+#define OPTION_NETPLAY_HASHLOG      "netplay_hashlog"
+#define OPTION_NETPLAY_HASHINTERVAL "netplay_hashinterval"
+
 #define OPTION_REWIND               "rewind"
 #define OPTION_REWIND_CAPACITY      "rewind_capacity"
 #define OPTION_PLAYBACK             "playback"
@@ -333,6 +339,9 @@ public:
 	// core state/playback options
 	const char *state() const { return value(OPTION_STATE); }
 	bool autosave() const { return bool_value(OPTION_AUTOSAVE); }
+	// NETPLAY
+	const char *netplay_hashlog() const { return value(OPTION_NETPLAY_HASHLOG); }
+	int netplay_hashinterval() const { return int_value(OPTION_NETPLAY_HASHINTERVAL); }
 	int rewind() const { return bool_value(OPTION_REWIND); }
 	int rewind_capacity() const { return int_value(OPTION_REWIND_CAPACITY); }
 	const char *playback() const { return value(OPTION_PLAYBACK); }
