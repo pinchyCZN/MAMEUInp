@@ -32,6 +32,8 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <vector>
 
 
 // ======================> netplay_state_hash
@@ -51,11 +53,22 @@ public:
 	// fingerprint of the save-state CONTENTS right now
 	u64 state_hash() const;
 
+	// DIAGNOSTIC, env-driven rather than an emu_option: NETPLAY_ENTRYLOG
+	// names a file, NETPLAY_ENTRYFRAMES a frame spec like
+	// "601-606,1201-1206", and every registered entry is hashed
+	// individually on those frames. Answers "WHICH entries differ", which
+	// one hash per frame cannot. Env vars because adding an emu_option
+	// means editing emuopts.h, which 179 translation units include; this
+	// way the module stays a one-TU rebuild. See notes/determinism.txt.
+
 private:
 	netplay_state_hash(running_machine &machine, const char *logpath, int interval);
 
 	void on_frame();
 	void on_exit();
+	void open_entry_log();
+	void dump_entries(u64 frame);
+	bool want_entries(u64 frame) const;
 
 	u64 compute_layout_hash() const;
 
@@ -64,6 +77,8 @@ private:
 	u64                 m_frame;
 	int                 m_interval;
 	FILE *              m_log;
+	FILE *              m_entry_log;
+	std::vector<std::pair<u64, u64> > m_entry_frames;
 };
 
 #endif // MAME_EMU_NETPLAY_NETPLAY_HASH_H

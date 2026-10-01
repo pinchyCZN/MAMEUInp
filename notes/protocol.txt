@@ -29,7 +29,8 @@ Table of Contents
       1.4. Session base time travels at join
       1.5. Carry a frame counter in the payload
       1.6. Input rate tiers: batch, do not decimate
-         1.6.1. What tiers actually buy, and what they do not
+         1.6.1. The hot-path word is 8 bytes
+         1.6.2. What tiers actually buy, and what they do not
    2. Resync from a savestate
       2.1. Two options, and only two
          2.1.1. Measured speed multiples, and a corrected assumption
@@ -38,7 +39,17 @@ Table of Contents
       2.4. Size and compression
       2.5. This is most of rollback
    3. Packet layout
+      3.1. Byte order is little-endian
+      3.2. Common header, 12 bytes
+      3.3. Message types
+      3.4. Flags
+      3.5. INPUT, the hot path
+      3.6. HASH
    4. Handshake
+      4.1. Sequence
+      4.2. What JOIN carries
+      4.3. -drc belongs here, not in the safe list
+      4.4. REFUSE carries a reason, and the reason is specific
    5. Open questions
 
 1.  Constraints the format has to satisfy
@@ -68,6 +79,36 @@ Table of Contents
    This is what the 0.119 Kaillera build did, and it is the one part of
    that design worth copying wholesale. [verified:
    e:/DEV/mame32/119/src/emu/inptport.c]
+
+   Rejecting record_port's SHAPE does not discard its value as evidence.
+   Whatever record_port captures is provably sufficient to reproduce a
+   session, because -record / -playback does exactly that. So its size is
+   a hard UPPER BOUND on what the wire must convey, and the
+   player-relative word has to be measured against it rather than
+   guessed at. Per frame, record_port writes [verified ioport.cpp]:
+
+       per port            defvalue + digital, ioport_value = u32    8
+       per analog field    m_accum, m_previous, m_sensitivity s32,
+                           m_reverse as u8                          13
+
+   Measured over 18 drivers that is 32 to 158 bytes per frame, the
+   maximum being offroad with 10 ports and 6 analog fields. The
+   player-relative word comes to 4 to 12 bytes per player (1.6.1), so
+   the chosen format is smaller than the bound as well as better routed.
+
+   TWO FIELDS IN record_port MUST NOT TRAVEL, for opposite reasons.
+   record_frame also writes a u32 speed_percent, which playback_frame
+   only accumulates into m_playback_accumulated_speed for statistics -
+   it never reaches machine state, and it is derived from wall clock, so
+   sending it would put host entropy on the wire for no benefit.
+   m_sensitivity and m_reverse are configuration, not per-frame input:
+   they belong in the handshake (1.3), where a mismatch is caught once,
+   rather than being retransmitted 60 times a second.
+
+   The recorded attotime is a third case and worth keeping. playback_frame
+   compares it against the live time and calls playback_end("Out of
+   sync"), so MAME already carries a 12-byte-per-frame misalignment check
+   of exactly the kind 1.5 argues for. [verified ioport.cpp]
 
 1.2.  The translation table is the format
 
@@ -108,6 +149,18 @@ Table of Contents
    need an owner in the format even though no player presses them:
    either a small shared word, or frozen at handshake. A digital field
    in neither set is a bug, not a default.
+
+   THE SHARED SET IS NOT EMPTY AND NOT NEGLIGIBLE. Measured across 18
+   drivers, every digital field resolves to either a player or the
+   shared set - 0 unclassified anywhere - but the shared set runs from 1
+   field (gauntlet, marble, offroad) to 17 (ffight), and is typically 6
+   to 15. It is DIPSWITCH, SERVICE, SERVICE1, SERVICE2, TILT and
+   per-driver oddments such as dino's Freeze. [verified,
+   tools/netplay_wordsize.py]
+
+   So the shared word is a real part of the format rather than a corner
+   case, and freezing it at handshake is the cheaper of the two options:
+   none of those fields is something a player presses during a match.
 
 1.3.  The handshake has to verify, not trust
 
@@ -200,24 +253,126 @@ Table of Contents
    point (netplay-hooks.txt 1.5) are all unaffected by which tier is in
    use. [inferred]
 
-1.6.1.  What tiers actually buy, and what they do not
+1.6.1.  The hot-path word is 8 bytes
 
-   NOT BANDWIDTH. Estimated at 4 players, a 4-byte input word, 28 bytes
-   of UDP/IPv4 and a 12-byte header of ours:
+   One fixed 8-byte word per player per frame. That is the whole hot
+   path. The size is measured, not chosen for roundness: over 26
+   drivers, counting each player's digital logical inputs at one bit
+   plus each of that player's analog axes at its mask width
+   [verified, tools/netplay_wordsize.py]:
 
-       tier 1   (28 + 12 + 16)   x 59.6  =  3.3 KB/s
-       tier 2   (28 + 12 + 32)   x 29.8  =  2.1 KB/s
-       tier 3   (28 + 12 + 48)   x 19.9  =  1.7 KB/s
-       tier 6   (28 + 12 + 96)   x  9.9  =  1.3 KB/s
+   +----------+---------+--------+------+----------------------+
+   | Driver   | Digital | Analog | Bits | What sets it         |
+   +==========+=========+========+======+======================+
+   | daytona  | 11      | 3      | 35   | pedal, brake, steer  |
+   +----------+---------+--------+------+----------------------+
+   | vr       | 8       | 3      | 32   | pedal, brake, wheel  |
+   +----------+---------+--------+------+----------------------+
+   | mjsister | 30      | 0      | 30   | mahjong panel        |
+   +----------+---------+--------+------+----------------------+
+   | royalmah | 28      | 0      | 28   | mahjong panel        |
+   +----------+---------+--------+------+----------------------+
+   | polepos  | 2       | 3      | 26   | pedal, brake, steer  |
+   +----------+---------+--------+------+----------------------+
+   | spyhunt  | 7       | 2      | 23   | pedal, paddle        |
+   +----------+---------+--------+------+----------------------+
+   | sf2      | 12      | 0      | 12   | joystick + 6 buttons |
+   +----------+---------+--------+------+----------------------+
+   | dino     | 8       | 0      | 8    | joystick + 2 buttons |
+   +----------+---------+--------+------+----------------------+
+   | gauntlet | 7       | 0      | 7    | joystick + 2 buttons |
+   +----------+---------+--------+------+----------------------+
 
-   [inferred - arithmetic on an assumed word size, not measured]
+   MAHJONG IS NOT THE AWKWARD CASE, which is worth saying because it
+   looks like it should be. Its 29-key panel plus start is 30 bits and
+   fits in 32. The driver that does not fit is daytona at 35 - eleven
+   digital inputs and three 8-bit analog axes. 25 of the 26 measured
+   drivers fit in 32 bits; daytona is the one that does not.
 
-   The whole range is 1.3 to 3.3 KB/s. On a DSL line moving hundreds of
-   KB/s that is a rounding error, and the saving between the best and
-   worst tier is under 2 KB/s. ANY ARGUMENT FOR LOW TIERS THAT RESTS ON
-   INPUT BANDWIDTH IS WRONG. The bandwidth problem in this protocol is
-   the resync payload (2.4), which is three orders of magnitude larger.
+   So mahjong costs nothing to support at this width. It is 30 bits of a
+   word already being sent, needs no extra field and no second message
+   type, and leaving it out would save zero bytes.
 
+   EVERY ANALOG FIELD MEASURED IS 8 BITS WIDE. 33 of 35 are 0xff; the
+   other two are tempest's 4-bit knobs. Nothing is wider, across
+   trackballs, pedals, steering, light guns and AD sticks - marble,
+   offroad, daytona, polepos, vr, starwars, sharrier, spyhunt, term2,
+   lethalen, tempest. [verified]
+
+   That is the GAME-VISIBLE width, which is the one that matters: the
+   mask decides how many bits reach the driver through
+   ioport_port::read(). Do not send analog as record_port's s32 m_accum.
+   m_accum is an accumulator whose mapping to the port value runs through
+   m_sensitivity, m_reverse, clamping and wrapping - all of it
+   configuration that belongs in the handshake (1.1). Sending the
+   post-mask value instead makes the payload independent of every one of
+   those settings. 4 bytes per axis would be sending 24 bits of nothing.
+
+   The layout follows directly, 32 bits of each:
+
+       bits  0-31    digital, one bit per logical input, assigned by
+                     the translation table (1.2)
+       bits 32-39    analog axis 0
+       bits 40-47    analog axis 1
+       bits 48-55    analog axis 2
+       bits 56-63    analog axis 3
+
+   32 digital bits covers mahjong's 30. Four analog axes covers the
+   measured maximum of three. A narrower axis - tempest - uses the low
+   bits of its byte and the table carries the mask.
+
+   THE MEASUREMENT IS 26 DRIVERS, AND THE STRUCTURAL BOUND IS HIGHER.
+   The per-player enum blocks are DIGITAL_JOYSTICK 12, MAHJONG 29,
+   HANAFUDA 10, GAMBLING 26, plus 16 action buttons. [verified
+   ioport.h] Nothing says a driver may use only one of them, and one
+   measured driver does not: mjsister assigns both MAHJONG and GAMBLING
+   types to player 1. It still lands at 30 bits because it uses a subset
+   of each, but a driver using all of both plus start and coin would be
+   57 digital bits, and with three analog axes 81 - eleven bytes, not
+   eight.
+
+   So the width is justified by measurement, not by construction. The
+   format does not widen speculatively to cover a driver no one has
+   found; it makes the case checkable instead. The translation table is
+   built at handshake, before any frame runs, so whether this driver's
+   fields fit in 64 bits is known then, and a driver that does not fit
+   is refused with a specific reason (4.4) rather than silently losing
+   its high bits.
+
+   FIXED, NOT PACKED PER DRIVER. The same table would equally support a
+   per-driver width of ceil(bits/8) - 1 byte for dino, 5 for daytona -
+   and that is still the wrong trade. A fixed slot puts frame N player P
+   at a constant offset, which keeps the hot path branch-free, makes
+   packet length a function of the tier alone, and makes the batching
+   and redundancy arithmetic of 1.6.2 trivial. The bandwidth it costs is
+   0.7 KB/s at tier 1 (below), on a link with hundreds available.
+1.6.2.  What tiers actually buy, and what they do not
+
+   NOT BANDWIDTH. Four players at 8 bytes is 32 bytes of payload per
+   frame, plus the 12-byte header of section 3 and 28 bytes of UDP/IPv4:
+
+   +------+--------------------+-----------+---------------+
+   | Tier | Bytes/packet       | Packets/s | KB/s per peer |
+   +======+====================+===========+===============+
+   | 1    | 40 +  1 x 32 =  72 | 59.6      | 4.2           |
+   +------+--------------------+-----------+---------------+
+   | 2    | 40 +  2 x 32 = 104 | 29.8      | 3.0           |
+   +------+--------------------+-----------+---------------+
+   | 3    | 40 +  3 x 32 = 136 | 19.9      | 2.6           |
+   +------+--------------------+-----------+---------------+
+   | 6    | 40 +  6 x 32 = 232 |  9.9      | 2.2           |
+   +------+--------------------+-----------+---------------+
+
+   2.2 to 4.2 KB/s. Carrying the previous batch again for redundancy
+   doubles the payload, not the total: tier 1 becomes (40 + 64) x 59.6 =
+   6.1 KB/s. Even sending record_port's structure unchanged - the upper
+   bound of 1.1, 158 B/frame on offroad - would be 11.5 KB/s.
+
+   On a DSL line moving hundreds of KB/s all of that is a rounding
+   error, and the spread between the best and worst tier is 2 KB/s. ANY
+   ARGUMENT FOR LOW TIERS THAT RESTS ON INPUT BANDWIDTH IS WRONG. The
+   bandwidth problem in this protocol is the resync payload (2.4), which
+   is three orders of magnitude larger.
    What they do buy:
 
    o PACKET RATE. 59.6 packets/s per peer down to 9.9. Cheap NAT
@@ -489,27 +644,242 @@ Table of Contents
 
 3.  Packet layout
 
-   Not designed. Constrained by sections 1 and 2.
+   UDP. Every datagram is self-contained and independently
+   interpretable, because a lockstep protocol that needs two packets to
+   make sense of one frame has reinvented TCP's head-of-line blocking
+   without its retransmission.
+
+3.1.  Byte order is little-endian
+
+   A WIRE-FORMAT INVARIANT, not a preference. Both peers are x86-64;
+   determinism.txt puts ARM out of scope, and MAME's own savestate
+   header stores its signature through little_endianize_int32
+   [verified save.cpp], so little-endian matches the precedent in the
+   tree. Network byte order would mean a byte swap on every field on
+   every packet on both ends, to serve a portability case that the
+   determinism requirements have already ruled out.
+
+3.2.  Common header, 12 bytes
+
+   +-----+------+-------------+------------------------------------+
+   | Off | Size | Field       | Meaning                            |
+   +=====+======+=============+====================================+
+   | 0   | u8   | type        | message type, 3.3                  |
+   +-----+------+-------------+------------------------------------+
+   | 1   | u8   | version     | protocol version; mismatch refuses |
+   +-----+------+-------------+------------------------------------+
+   | 2   | u16  | session     | assigned by the server at join     |
+   +-----+------+-------------+------------------------------------+
+   | 4   | u32  | base_frame  | frame number of the first frame    |
+   +-----+------+-------------+------------------------------------+
+   | 8   | u8   | nframes     | consecutive frames in the payload  |
+   +-----+------+-------------+------------------------------------+
+   | 9   | u8   | player_mask | bit p set: player p word present   |
+   +-----+------+-------------+------------------------------------+
+   | 10  | u8   | flags       | 3.4                                |
+   +-----+------+-------------+------------------------------------+
+   | 11  | u8   | reserved    | zero; receivers must not check it  |
+   +-----+------+-------------+------------------------------------+
+
+   base_frame IS 32 BITS AND IS NOT PACKED. The reasoning is 1.5's: at
+   60 Hz a 16-bit counter wraps every 18 minutes, which is a bug that
+   surfaces in production and never in a test. One copy per PACKET, not
+   per frame - with batching the frames in a packet are consecutive by
+   construction, so frame i of the payload is base_frame + i. That is
+   also why nframes exists rather than being derived from the datagram
+   length: the length is known, but a receiver should reject a truncated
+   or padded packet rather than infer a frame count from it.
+
+   player_mask IS A MASK, NOT A COUNT, so a packet can carry a subset of
+   players. The server needs this to forward what it has when a peer's
+   input is late; a count could only express a prefix.
+
+   reserved IS NOT CHECKED BY RECEIVERS. A version-gated field that
+   receivers validate cannot later be used without a version bump; one
+   they ignore can.
+
+3.3.  Message types
+
+   +------+---------+-------------+--------------------------------------+
+   | Type | Name    | Direction   | Purpose                              |
+   +======+=========+=============+======================================+
+   | 0x01 | INPUT   | both        | the hot path, 3.5                    |
+   +------+---------+-------------+--------------------------------------+
+   | 0x02 | JOIN    | peer -> srv | request to join, carries 4.2         |
+   +------+---------+-------------+--------------------------------------+
+   | 0x03 | WELCOME | srv -> peer | session, slot, tier, base time       |
+   +------+---------+-------------+--------------------------------------+
+   | 0x04 | REFUSE  | srv -> peer | reason code; session not started     |
+   +------+---------+-------------+--------------------------------------+
+   | 0x05 | START   | srv -> all  | first frame number, go               |
+   +------+---------+-------------+--------------------------------------+
+   | 0x06 | HASH    | both        | state hash at a frame, 3.6           |
+   +------+---------+-------------+--------------------------------------+
+   | 0x07 | DESYNC  | srv -> all  | divergence found, resync coming      |
+   +------+---------+-------------+--------------------------------------+
+   | 0x08 | RESYNC  | srv -> all  | bulk state, out of band (2.2)        |
+   +------+---------+-------------+--------------------------------------+
+   | 0x09 | STALL   | both        | I am not ready for frame N           |
+   +------+---------+-------------+--------------------------------------+
+   | 0x0a | CHAT    | both        | its own type, never input bits (1.5) |
+   +------+---------+-------------+--------------------------------------+
+   | 0x0b | BYE     | both        | leaving, with a reason               |
+   +------+---------+-------------+--------------------------------------+
+
+   Numbering starts at 1 so that a zero first byte is always a malformed
+   packet rather than a valid message.
+
+3.4.  Flags
+
+       bit 0   HASH_TRAILER   an 8-byte state hash for base_frame
+                              follows the payload
+       bit 1   REDUNDANT      this packet repeats frames already sent
+       bit 2   FINAL          last input packet of the session
+       bits 3-7  zero
+
+   HASH_TRAILER is how desync detection rides along. The hash is 8 bytes
+   and only needs to travel on the frames actually being checked, so
+   attaching it to an INPUT packet rather than giving it its own
+   datagram costs 8 bytes instead of 48 and cannot arrive out of step
+   with the frame it describes.
+
+3.5.  INPUT, the hot path
+
+       header            12 bytes, 3.2
+       words             nframes x popcount(player_mask) x 8 bytes
+       hash trailer       8 bytes if flags & HASH_TRAILER
+
+   Words are ordered frame-major, then by ascending player slot, so the
+   word for frame base_frame + i and the n'th set bit of player_mask is
+   at a fixed offset. The 8-byte word is 1.6.1.
+
+   At tier 1 with four players that is a 44-byte datagram, 52 with a
+   hash. At tier 6 carrying one redundant batch, 12 + 12 x 4 x 8 = 396.
+   Every case is far inside any MTU, so the format never fragments and
+   never needs to.
+
+3.6.  HASH
+
+       header            12 bytes, base_frame is the frame hashed
+       layout_hash        8 bytes, netplay_hash.h; handshake only
+       state_hash         8 bytes
+
+   A standalone HASH message exists for the handshake, where the layout
+   hash is exchanged before any frame has run. In the session the hash
+   travels as an INPUT trailer (3.4) instead.
+
+   determinism.txt 6 records why one sampled frame is not enough: input
+   that diverges is not visible in the hash on the frame it is applied,
+   only on the next, because it has not reached RAM yet. Check runs of
+   consecutive frames, not isolated ones.
 
 4.  Handshake
 
-   Not designed. Constrained by 1.3.
+   The handshake's job is to refuse a session that would desync, since a
+   session that starts and diverges three minutes later is far more
+   expensive than one that never starts (1.3).
+
+4.1.  Sequence
+
+       peer -> server    JOIN      identity digests, 4.2
+       server            compares against the session's own
+       server -> peer    WELCOME   session, player slot, tier, base time
+                     or  REFUSE    reason code, 4.4
+       server -> all     START     first frame number
+
+   The tier is the WORST peer's, decided by the server as peers join
+   (1.6), and travels in WELCOME. A peer joining a running session is
+   not a tier renegotiation; it is a resync (2).
+
+4.2.  What JOIN carries
+
+   determinism.txt 4 is the authority on what must match. Each entry is
+   a digest rather than the thing itself, so JOIN stays one datagram:
+
+   +----------+-----------------------------------+--------------------------------------+
+   | Field    | Digest of                         | Why                                  |
+   +==========+===================================+======================================+
+   | build    | binary version and OPTIMIZE level | determinism.txt 4                    |
+   +----------+-----------------------------------+--------------------------------------+
+   | driver   | system name and ROM set           | different ROMs, different code       |
+   +----------+-----------------------------------+--------------------------------------+
+   | bios     | -bios selection                   | changes executed code                |
+   +----------+-----------------------------------+--------------------------------------+
+   | dipsw    | every IPT_DIPSWITCH value         | changes game behaviour               |
+   +----------+-----------------------------------+--------------------------------------+
+   | inputcfg | the translation table itself      | 1.2; a mismatch misroutes            |
+   +----------+-----------------------------------+--------------------------------------+
+   | nvram    | NVRAM and EEPROM contents         | netplay-hooks.txt 5.2                |
+   +----------+-----------------------------------+--------------------------------------+
+   | layout   | save_manager layout hash          | netplay_hash.h; not the same machine |
+   +----------+-----------------------------------+--------------------------------------+
+   | perf     | frameskip, -cheat, -drc           | determinism.txt 3 and 7              |
+   +----------+-----------------------------------+--------------------------------------+
+   | basetime | nothing - the server sets it      | 1.4; sent back, not proposed         |
+   +----------+-----------------------------------+--------------------------------------+
+
+   THE LAYOUT HASH IS THE STRONGEST OF THESE AND THE CHEAPEST. It is one
+   u64 over every registered entry's name, element size and element
+   count, so it catches a different binary, a different driver, a
+   different device configuration and a different MAME version in a
+   single comparison, without enumerating what might differ. The others
+   remain because it does not catch what it cannot see: DIP settings and
+   NVRAM contents live inside entries whose SHAPE is identical.
+
+   THE TRANSLATION TABLE IS PART OF THE IDENTITY, not a local detail.
+   Two peers that resolve (player, logical input) to different (port,
+   mask) pairs will route each other's input to the wrong fields while
+   agreeing on every other digest. 1.2 requires the table to be total
+   over digital fields; the digest is what makes that checkable between
+   peers rather than only locally.
+
+4.3.  -drc belongs here, not in the safe list
+
+   determinism.txt 7 open questions leave DRC-versus-interpreter
+   bit-equivalence unverified. Until it is read, -drc is handshake
+   state: peers must agree, the same way they must agree on frameskip.
+
+   This costs nothing for CPS1 and Neo Geo, which use no DRC at all, and
+   it is the difference between a desync hunt and a refused session for
+   the SH, MIPS and PowerPC drivers that do.
+
+4.4.  REFUSE carries a reason, and the reason is specific
+
+       0x01  version      protocol version mismatch
+       0x02  build        different binary
+       0x03  driver       different system or ROM set
+       0x04  bios         different -bios
+       0x05  dipsw        DIP or config settings differ
+       0x06  inputcfg     translation tables differ
+       0x07  nvram        NVRAM or EEPROM differs
+       0x08  layout       savestate layout differs
+       0x09  perf         frameskip, cheat or drc differs
+       0x0a  full         no free player slot
+       0x0b  running      session started, and it does not accept joins
+       0x0c  toowide      driver needs more than 64 bits per player
+
+   NAME THE FIELD THAT MISMATCHED. A generic refusal makes the user
+   compare an entire configuration by hand. Nine of these are a
+   mismatch a peer can fix, and most name a single setting; the last
+   three are not configuration at all - two are capacity and toowide is
+   a property of the driver, which no peer can do anything about.
 
 5.  Open questions
 
-   o Whether the shared non-player digital fields (service, tilt,
-     driver-internal) are carried as a small shared word or frozen at
-     handshake, and who may change them mid-session. They must be
-     covered either way - see 1.2.
+   o Who may change the shared non-player digital fields mid-session,
+     and whether any driver needs them changed at all. 1.2 settles that
+     freezing them at handshake is the cheaper option and that the set
+     is 1 to 17 fields depending on driver; it does not establish that
+     nothing legitimately toggles service or tilt during a match.
    o The logical input id enumeration. Deriving it from ioport_type
      normalised to player 1 is the obvious approach, but the START and
      COIN types break that normalisation (1.2), so the enumeration is
      not simply a subrange of ioport_type.
-   o Analog. record_port carries m_accum, m_previous, m_sensitivity and
-     m_reverse per analog field. Sensitivity and reverse are local
-     configuration, so sending them every frame is wasteful, but NOT
-     sending them means a peer with different analog settings diverges.
-     Undecided.
+   o Whether four 8-bit analog axes per player is enough across the
+     whole coinop set. Three is the measured maximum over 26 drivers
+     and every axis measured is 8 bits or narrower (1.6.1), but that is
+     a sample. A portdump sweep of the full set would settle it, and
+     the handshake refuses what does not fit either way.
    o Whether the server relays the INPUT stream or only brokers the
      session with peers connected directly. Relaying costs roughly 1.5x
      the peer-to-peer round trip. Undecided. Separate question from
@@ -521,15 +891,18 @@ Table of Contents
      with -str N -nothrottle would answer it.
    o A savestate taken during real gameplay rather than attract mode, to
      put an upper bound on the compressed column in 2.4.
-   o The input word size. 1.6.1's bandwidth arithmetic assumes 4 bytes
-     per player per frame; the real figure comes out of the field set in
-     1.2 and has not been counted.
+   o Whether any driver in the coinop set exceeds 64 bits per player.
+     The structural bound is 81 bits and the measured maximum is 35
+     (1.6.1). Only a sweep distinguishes 'none exist' from 'none
+     sampled'.
    o Tier negotiation: how a peer advertises what it can sustain, and
      whether the session may change tier mid-game or only at join.
-   o Desync detection: which subset of machine state to hash, how
-     often, and whether the digest travels in the per-frame packet or
-     out of band. It has to exist BEFORE resync or rollback, because it
-     is the trigger for both (2.3).
+   o How often the state hash travels. What to hash is settled - every
+     registered entry, netplay_hash.h - and so is where it rides, as an
+     INPUT trailer (3.4). The interval is not: every frame costs
+     nothing in bandwidth but hashes the whole save set 60 times a
+     second, and determinism.txt 6 shows a single sampled frame can
+     miss a divergence that the next frame shows.
    o Input delay: fixed at join, negotiated, or adaptive.
    o What K should be in 2.3, and whether it scales with session
      length.

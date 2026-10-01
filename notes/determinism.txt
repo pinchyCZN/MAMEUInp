@@ -29,7 +29,8 @@ Table of Contents
    3. Frameskip is NOT presentation-only
    4. Configuration that must match between peers
    5. Settings that are safe to differ
-   6. Open questions
+   6. Savestates round-trip exactly; input state does not
+   7. Open questions
 
 1.  Why MAME is deterministic at all
 
@@ -222,7 +223,52 @@ Table of Contents
    to be unsafe, treat this list as unconfirmed and pin these too until
    somebody does the reading.
 
-6.  Open questions
+6.  Savestates round-trip exactly; input state does not
+
+   A savestate save/load is bit-identical over every registered entry.
+   Measured on dino: from a matched starting point the hash sequence
+   after a load replays the sequence after the save for the whole
+   comparable window - 320 of 320 frames, 512 of 512 - with no
+   settling period. [verified, tools/netplay_roundtrip.lua]
+
+   What a savestate does NOT carry is ioport live state. m_digital_value
+   is not registered with save_manager - it is absent from dino's 931
+   entries - so a load leaves whatever input was held at the moment of
+   the load still held. [verified]
+
+   The consequence is a two-frame divergence that looks exactly like an
+   imperfect savestate and is not one. With the wrong buttons held, the
+   frame after the load writes them into work RAM and the game acts on
+   them for two frames before re-reading input and converging:
+
+   +-----+----------------------+---------------------------------------+
+   | k   | entries differing    | which                                 |
+   +=====+======================+=======================================+
+   | 1   | 0 of 931             | the load restored state exactly       |
+   +-----+----------------------+---------------------------------------+
+   | 2   | 1 of 931             | memory/:maincpu/0/00ff0000-00ffffff   |
+   +-----+----------------------+---------------------------------------+
+   | 3   | 1 of 931             | memory/:maincpu/0/00ff0000-00ffffff   |
+   +-----+----------------------+---------------------------------------+
+   | 4+  | 0 of 931             | converged                             |
+   +-----+----------------------+---------------------------------------+
+
+   68000 work RAM and nothing else. Note k=1 is clean: the divergent
+   input has not reached RAM yet, so a single whole-state hash agrees on
+   the first frame and disagrees on the second. A desync check that
+   sampled only frame k=1 would call this identical. [verified,
+   NETPLAY_ENTRYLOG per-entry dump]
+
+   Two requirements follow:
+
+   o On resync, set the input for the resumed frame explicitly. Do not
+     assume the load restored it; it did not.
+   o A test that drives synthetic input on a cycle must place its save
+     and load points at the same phase of that cycle, or it measures
+     its own harness. tools/netplay_roundtrip.lua refuses a gap that is
+     not a whole number of INPUT_PERIOD for this reason.
+
+7.  Open questions
 
    o -numprocessors and the threaded rasterizers. MAME dispatches some
      3D rasterization through osd_work_queue. Order-independence is

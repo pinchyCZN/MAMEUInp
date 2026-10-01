@@ -39,6 +39,13 @@ OUR_PATHS = ["CLAUDE.md", "notes", "tools", "server", "src/emu/netplay"]
 TEXT_EXT = {".md", ".txt", ".py", ".c", ".h", ".cpp", ".hpp", ".java",
             ".json", ""}
 
+# The ASCII rule (CLAUDE.md 5) covers every file we own. The 80-column
+# and table-alignment rules are the DOCUMENT rules (CLAUDE.md 6) and
+# apply only to these. Enforcing 80 columns on C++ in MAME tree would
+# fight rule 9: upstream routinely runs past it, and our sources sit
+# beside upstream ones.
+DOC_EXT = {".md", ".txt"}
+
 # Codepoint -> ASCII replacement. Extend deliberately; an unmapped
 # character is reported, never guessed at.
 XLAT = {
@@ -292,6 +299,7 @@ def check(paths):
         except (UnicodeDecodeError, OSError):
             continue
         rel = p.replace("\\", "/")
+        is_doc = os.path.splitext(p)[1].lower() in DOC_EXT
         for i, line in enumerate(text.split("\n"), 1):
             odd = sorted({c for c in line if ord(c) > 0x7F})
             if odd:
@@ -312,16 +320,18 @@ def check(paths):
             # with tabs (see tools/retab.py); counting them as one
             # character each would let a deeply nested line run to 110
             # real columns and still pass an 80-column check.
+            if not is_doc:
+                continue
             limit = TABLE_COLS if is_table(line) else PROSE_COLS
             width = len(line.expandtabs(TAB_WIDTH))
             if width > limit:
                 print("%s:%d: %d cols (limit %d)" % (rel, i, width, limit))
                 bad += 1
-        for i, got, want in misaligned(text):
+        for i, got, want in (misaligned(text) if is_doc else ()):
             print("%s:%d: table row is %d cols, its border is %d"
                   % (rel, i, got, want))
             bad += 1
-        for i in doubled_rules(text):
+        for i in (doubled_rules(text) if is_doc else ()):
             print("%s:%d: +---+ rule directly above the +===+ header rule"
                   % (rel, i))
             bad += 1

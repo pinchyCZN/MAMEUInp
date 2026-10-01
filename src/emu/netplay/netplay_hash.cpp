@@ -12,6 +12,7 @@
 #include "emuopts.h"                  // emu_options is not complete via emu.h
 #include "netplay/netplay_hash.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -114,7 +115,11 @@ netplay_state_hash::netplay_state_hash(running_machine &machine, const char *log
 	, m_frame(0)
 	, m_interval(interval > 0 ? interval : 1)
 	, m_log(nullptr)
+	, m_entry_log(nullptr)
+	, m_entry_frames()
 {
+	open_entry_log();
+
 	m_layout_hash = compute_layout_hash();
 
 	m_log = std::fopen(logpath, "w");
@@ -213,12 +218,117 @@ u64 netplay_state_hash::state_hash() const
 
 
 //-------------------------------------------------
+//  open_entry_log - DIAGNOSTIC per-entry dump, see
+//  the header for why this is env-driven
+//-------------------------------------------------
+
+void netplay_state_hash::open_entry_log()
+{
+	const char *const path = std::getenv("NETPLAY_ENTRYLOG");
+	const char *const spec = std::getenv("NETPLAY_ENTRYFRAMES");
+	if ((path == nullptr) || (*path == 0) || (spec == nullptr) || (*spec == 0))
+		return;
+
+	// spec is "A-B,C-D,..." or bare frame numbers; anything unparseable is
+	// skipped rather than guessed at
+	const char *p = spec;
+	while (*p != 0)
+	{
+		char *end = nullptr;
+		const unsigned long long lo = std::strtoull(p, &end, 10);
+		if (end == p)
+			break;
+		unsigned long long hi = lo;
+		p = end;
+		if (*p == '-')
+		{
+			p++;
+			hi = std::strtoull(p, &end, 10);
+			if (end == p)
+				hi = lo;
+			else
+				p = end;
+		}
+		m_entry_frames.push_back(std::make_pair(u64(lo), u64(hi)));
+		while ((*p != 0) && (*p != ','))
+			p++;
+		if (*p == ',')
+			p++;
+	}
+
+	if (m_entry_frames.empty())
+		return;
+
+	m_entry_log = std::fopen(path, "w");
+	if (m_entry_log == nullptr)
+	{
+		osd_printf_error("netplay: unable to open entry log '%s'\n", path);
+		return;
+	}
+
+	std::fprintf(m_entry_log, "# machine=%s\n", m_machine.system().name);
+	std::fprintf(m_entry_log, "# entries=%d\n", m_machine.save().registration_count());
+	std::fprintf(m_entry_log, "# frames=%s\n", spec);
+	std::fprintf(m_entry_log, "frame,index,name,typesize,typecount,hash\n");
+	std::fflush(m_entry_log);
+
+	osd_printf_info("netplay: per-entry dump to '%s' for frames %s\n", path, spec);
+}
+
+
+//-------------------------------------------------
+//  want_entries
+//-------------------------------------------------
+
+bool netplay_state_hash::want_entries(u64 frame) const
+{
+	for (const auto &range : m_entry_frames)
+		if ((frame >= range.first) && (frame <= range.second))
+			return true;
+	return false;
+}
+
+
+//-------------------------------------------------
+//  dump_entries - one row per registered entry
+//-------------------------------------------------
+
+void netplay_state_hash::dump_entries(u64 frame)
+{
+	save_manager &save = m_machine.save();
+	const int count = save.registration_count();
+
+	for (int i = 0; i < count; i++)
+	{
+		void *base = nullptr;
+		u32 valsize = 0, valcount = 0;
+		const char *const name = save.indexed_item(i, base, valsize, valcount);
+		if ((name == nullptr) || (base == nullptr))
+			continue;
+
+		const u64 h = hash_finalise(hash_bytes(HASH_SEED, base,
+				size_t(valsize) * size_t(valcount)));
+
+		// names carry '/' and ':' but not ',', so plain CSV is safe
+		std::fprintf(m_entry_log, "%llu,%d,%s,%u,%u,%016llx\n",
+				static_cast<unsigned long long>(frame), i, name,
+				valsize, valcount, static_cast<unsigned long long>(h));
+	}
+	std::fflush(m_entry_log);
+}
+
+
+//-------------------------------------------------
 //  on_frame
 //-------------------------------------------------
 
 void netplay_state_hash::on_frame()
 {
 	const u64 frame = m_frame++;
+
+	// before the interval early-out: the dump must not depend on it
+	if ((m_entry_log != nullptr) && want_entries(frame))
+		dump_entries(frame);
 
 	if ((frame % u64(m_interval)) != 0)
 		return;
@@ -243,6 +353,13 @@ void netplay_state_hash::on_exit()
 		std::fflush(m_log);
 		std::fclose(m_log);
 		m_log = nullptr;
+	}
+
+	if (m_entry_log != nullptr)
+	{
+		std::fflush(m_entry_log);
+		std::fclose(m_entry_log);
+		m_entry_log = nullptr;
 	}
 
 	osd_printf_info("netplay: state hash log closed after %llu frame(s)\n",
