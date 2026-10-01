@@ -31,6 +31,9 @@ Table of Contents
       1.6. Input rate tiers: batch, do not decimate
          1.6.1. The hot-path word is 8 bytes
          1.6.2. What tiers actually buy, and what they do not
+         1.6.3. Input delay is the jitter budget, and batching
+                spends it
+         1.6.4. Why this targets smoothness, not latency
    2. Resync from a savestate
       2.1. Two options, and only two
          2.1.1. Measured speed multiples, and a corrected assumption
@@ -218,9 +221,16 @@ Table of Contents
 
 1.6.  Input rate tiers: batch, do not decimate
 
-   A session runs at one of four input tiers, fixed at join and identical
-   for every peer. Kaillera exposed the same idea as a connection
-   setting labelled in frames per second.
+   A peer sends its input at one of six tiers. Kaillera exposed the
+   same ladder as a connection setting labelled in packets per
+   second, and its rungs are exactly frames-per-packet 1 through 6.
+
+   THE TIER IS PER PEER, not per session. A receiver does not care
+   how many frames arrived in one datagram; it files each frame into
+   the input ring either way. What batching couples to is the
+   SENDER's own delay budget (1.6.3), and that is per peer too.
+   Kaillera negotiated the whole session down to the worst
+   connection, which makes every player pay for one bad link.
 
    DEFINE THE TIER AS FRAMES PER PACKET, NOT AS A FRAME RATE. No arcade
    machine runs at exactly 60 Hz - measured from -listxml, dino is
@@ -228,18 +238,21 @@ Table of Contents
    [verified] Frames per packet is exact, integral and driver
    independent; a rate in Hz is none of those.
 
-   +--------+----------+----------------+------------------------------+
-   | Tier   | Frames   | Packets/s at   | Minimum added input delay    |
-   |        | / packet | ~59.6 Hz       |                              |
-   +========+==========+================+==============================+
-   | 1      |        1 |           59.6 | 1 frame, ~17 ms   (LAN)      |
-   +--------+----------+----------------+------------------------------+
-   | 2      |        2 |           29.8 | 2 frames, ~34 ms             |
-   +--------+----------+----------------+------------------------------+
-   | 3      |        3 |           19.9 | 3 frames, ~50 ms             |
-   +--------+----------+----------------+------------------------------+
-   | 6      |        6 |            9.9 | 6 frames, ~101 ms            |
-   +--------+----------+----------------+------------------------------+
+   +------+--------+--------------+----------------+
+   | Tier | Frames | Packets/s at | Kaillera label |
+   +======+========+==============+================+
+   | 1    | 1      | 59.6         | LAN 60         |
+   +------+--------+--------------+----------------+
+   | 2    | 2      | 29.8         | excellent 30   |
+   +------+--------+--------------+----------------+
+   | 3    | 3      | 19.9         | good 20        |
+   +------+--------+--------------+----------------+
+   | 4    | 4      | 14.9         | average 15     |
+   +------+--------+--------------+----------------+
+   | 5    | 5      | 11.9         | low 12         |
+   +------+--------+--------------+----------------+
+   | 6    | 6      |  9.9         | bad 10         |
+   +------+--------+--------------+----------------+
 
    BATCH, DO NOT DECIMATE. Sample local input EVERY frame and group
    whole frames into one packet. Do not sample at the tier rate and hold
@@ -360,8 +373,14 @@ Table of Contents
    +------+--------------------+-----------+---------------+
    | 3    | 40 +  3 x 32 = 136 | 19.9      | 2.6           |
    +------+--------------------+-----------+---------------+
+   | 4    | 40 +  4 x 32 = 168 | 14.9      | 2.4           |
+   +------+--------------------+-----------+---------------+
+   | 5    | 40 +  5 x 32 = 200 | 11.9      | 2.3           |
+   +------+--------------------+-----------+---------------+
    | 6    | 40 +  6 x 32 = 232 |  9.9      | 2.2           |
    +------+--------------------+-----------+---------------+
+
+   All figures KB/s per peer.
 
    2.2 to 4.2 KB/s. Carrying the previous batch again for redundancy
    doubles the payload, not the total: tier 1 becomes (40 + 64) x 59.6 =
@@ -373,28 +392,154 @@ Table of Contents
    ARGUMENT FOR LOW TIERS THAT RESTS ON INPUT BANDWIDTH IS WRONG. The
    bandwidth problem in this protocol is the resync payload (2.4), which
    is three orders of magnitude larger.
+
    What they do buy:
 
    o PACKET RATE. 59.6 packets/s per peer down to 9.9. Cheap NAT
-     hardware tracks state per flow and dislikes high rates; there is
-     per-packet cost at every layer regardless of size.
-   o JITTER TOLERANCE. This is the real one. At tier 1 a packet is
-     needed every 17 ms and a 20 ms hiccup stalls the session; at tier 6
-     the budget is 101 ms. Lockstep converts jitter directly into
-     stalls, so headroom here is worth more than throughput.
-   o REDUNDANCY EFFICIENCY. Carrying the last K frames in every packet
-     makes loss self-repairing without retransmission, and the overhead
-     of doing so shrinks as packets carry more frames.
+     hardware tracks state per flow and dislikes high rates, and
+     there is per-packet cost at every layer regardless of size.
+   o REDUNDANCY EFFICIENCY. Carrying the previous batch again in
+     every packet makes loss self-repairing without
+     retransmission, and the overhead of doing so shrinks as
+     packets carry more frames.
 
-   The cost is paid in latency, and it is not optional: the minimum
-   added input delay equals the batch size, because frame N cannot run
-   until the packet carrying it arrives. Tier 6 therefore costs ~101 ms
-   before RTT is counted at all.
+   WHAT THEY DO NOT BUY IS JITTER TOLERANCE, and that is the
+   opposite of how the setting looks. A high tier does not create
+   slack between packets for the network to be late in - it SPENDS
+   the budget the input delay provides. See 1.6.3, which is the
+   one piece of arithmetic in this document worth memorising.
 
-   The session negotiates to the WORST peer's tier, as Kaillera did.
-   Mixed tiers would mean peers disagreeing about which frames travel
-   together.
 
+1.6.3.  Input delay is the jitter budget, and batching spends it
+
+   TWO KNOBS, BOTH USER-VISIBLE: the tier K (frames per packet) and the
+   input delay D (frames). Kaillera exposed only K and set D behind it.
+   D is the one that decides whether a session stutters, so it does not
+   get hidden here - see 1.6.4 for what happens when it is.
+
+   D is not a buffer sitting beside the delay. It IS the buffer. With
+   delay D a peer's input for frame N was captured D frames earlier, so
+   the network has that long to deliver it, and that delivery window is
+   the jitter tolerance. netplay_manager already holds it as m_delay and
+   the input ring; there is no second mechanism to build.
+
+   LANDMINE: BATCHING COSTS BUDGET, IT DOES NOT PROVIDE IT. A sender
+   cannot transmit a batch until it has captured every frame in it, so
+   the FIRST frame of each batch waits for the other K-1:
+
+       batch covering frames [30,31,32], K=3, D=10
+         frame 32 captured at sender frame 22 -> batch sent at 22
+         frame 30 needed at receiver frame 30 -> budget 8 frames
+
+       effective jitter budget = (D - K + 1) frames
+
+   The budget varies across a batch, from D for its last frame down to
+   D - K + 1 for its first, and the first is what binds. So D = K is a
+   one-frame budget whatever K is: at tier 6 that is 17 ms, which
+   stutters on any link worth tuning for.
+
+   Sizing follows. At dino's measured 59.637405 Hz a frame is 16.77 ms
+   (1.6), so
+
+       D >= ceil( (one_way_delay + jitter_margin) / 16.77ms ) + K - 1
+
+   which gives the Kaillera ladder back with the delay derived rather
+   than bundled:
+
+   +-----------+---+-------------------+----+----------+------+
+   | Preset    | K | Covers OWD+jitter | D  | Felt lag | KB/s |
+   +===========+===+===================+====+==========+======+
+   | LAN       | 1 |  10 ms            |  1 |  17 ms   | 4.2  |
+   +-----------+---+-------------------+----+----------+------+
+   | excellent | 2 |  25 ms            |  3 |  50 ms   | 3.0  |
+   +-----------+---+-------------------+----+----------+------+
+   | good      | 3 |  45 ms            |  5 |  84 ms   | 2.6  |
+   +-----------+---+-------------------+----+----------+------+
+   | average   | 4 |  70 ms            |  8 | 134 ms   | 2.4  |
+   +-----------+---+-------------------+----+----------+------+
+   | low       | 5 | 100 ms            | 10 | 168 ms   | 2.3  |
+   +-----------+---+-------------------+----+----------+------+
+   | bad       | 6 | 140 ms            | 14 | 235 ms   | 2.2  |
+   +-----------+---+-------------------+----+----------+------+
+
+   [inferred] The D column is arithmetic on the formula, not measured.
+   The OWD figures are what each rung is intended to cover.
+
+   D NEED NOT MATCH BETWEEN PEERS. In netplay_manager, m_delay decides
+   only which future frame a peer's own capture lands on; emulated state
+   depends solely on the CONTENTS of a ring slot, which is the same set
+   of words everywhere. So A can run D=3 while B runs D=12 and the
+   session stays bit-identical. [verified by construction,
+   netplay_manager.cpp frame_end]
+
+   The constraint is per direction:
+
+       for every sender Y and receiver X:
+           (D_Y - K_Y + 1) * frame_time > owd(Y->X) + jitter(Y->X)
+
+   So each peer's delay covers that peer's own outbound path, and a
+   player on a bad link raises their OWN D. Only they pay the lag.
+   Everyone else keeps a small D and still receives their input in time.
+
+   The cost of asymmetry is competitive fairness: a D=3 player reacts
+   faster than a D=12 player. That is a preference, not a correctness
+   question, so it is a mode rather than a rule - equalising D across
+   peers trades that advantage away and keeps the smoothness.
+
+   CHANGING D MID-SESSION IS FREE, for the same reason it need not
+   match: no peer but the owner ever writes those slots, so there is no
+   resync and no protocol event. One rule covers both directions. Keep a
+   high-water mark of the last frame published and publish to
+
+       target = max(high_water + 1, current_frame + D)
+
+   filling any gap by repeating the current word. Raising D by n leaves an
+   n-frame gap, which the rule fills by holding the current input across
+   it. Lowering D by n would re-target n frames already published, which
+   the rule skips, so the input is frozen at values already committed
+   rather than rewritten. A rewrite is the thing to avoid: two values for
+   one frame is a desync if peers received different ones. Either way the
+   artifact is n frames of held input, which is why the control law should
+   move D one step at a time rather than jumping.
+
+   That also retires fast-forward as a catch-up tool. LOCKSTEP CANNOT
+   DRIFT - a peer cannot run frame N without frame N's input and cannot
+   outrun the stream - so there is no backlog to burn off. The real case
+   is a delay that grew and should shrink, and the cure is to lower D by
+   one and wait, costing one frozen input frame per step. Emulation speed
+   never changes at all. [open] The control law - when to raise, when to
+   lower - is not written yet; an adaptive jitter buffer is a solved
+   problem in VoIP and the same arithmetic applies.
+
+1.6.4.  Why this targets smoothness, not latency
+
+   SMOOTH PLAYBACK BEATS LOW INPUT LATENCY. A stutter is worse than
+   200 ms of lag. Where the two conflict, this design spends latency.
+
+   That is a choice, and the games decide it. Modern emulator netplay is
+   tuned for fighting games, where the shared state is two human
+   opponents: a late or missing input costs one move, against a player
+   who also missed it, and minimising latency is worth the occasional
+   hitch. In a co-op game the shared state is a world full of AI that
+   reacts to player input, so a lost input means a character doing the
+   wrong thing in a world that responds to it, and the consequences
+   compound rather than cancel.
+
+   The evidence that the trade works is Kaillera at its lowest rung:
+   two peers on separate continents, ~90 and ~110 ms ping, an hour of
+   bubble bobble with no stall and no desync. Reconstructing it against
+   the formula above - K=6 against roughly 90 ms of OWD plus jitter -
+   puts that session at D of 11 to 14, so 185 to 235 ms of input lag.
+   Players described it as laggy and entirely playable. [inferred from a
+   reported session, not measured here]
+
+   The counter-evidence is later Kaillera versions, which stuttered
+   badly at the SAME lowest rung. Reducing D while leaving K at 6
+   collapses the budget to D - 5 frames, and at D = 6 that is one frame,
+   17 ms. That is what hiding D behind a connection label permits: the
+   setting a user picks for smoothness stops delivering it and the user
+   has no knob to reach for. Hence 1.6.3's two knobs. [inferred - the
+   mechanism matches the reported symptom; their source was not read]
 
 2.  Resync from a savestate
 
@@ -895,8 +1040,20 @@ Table of Contents
      The structural bound is 81 bits and the measured maximum is 35
      (1.6.1). Only a sweep distinguishes 'none exist' from 'none
      sampled'.
-   o Tier negotiation: how a peer advertises what it can sustain, and
-     whether the session may change tier mid-game or only at join.
+   o The adaptive control law for D: what to measure, and the
+     thresholds for raising and lowering it (1.6.3). Arrival margin
+     per frame is the obvious signal; reacting to a stall means the
+     stutter already happened.
+   o Server-side input synthesis - holding a late player's last word
+     at a deadline so nobody stalls - is CONSIDERED AND DEFERRED. It
+     would not desync if the substituted word were authoritative, but
+     it costs the late player their input, and 1.6.4 is why that is
+     the wrong currency for these games. Revisit only if stalls turn
+     out to be a real problem in practice.
+   o A stalled peer stalls everyone: it stops running frames, so it
+     stops capturing, so it stops publishing. Lockstep has no answer
+     to this short of the deferred synthesis above. Sizing D so it
+     does not happen is the whole strategy.
    o How often the state hash travels. What to hash is settled - every
      registered entry, netplay_hash.h - and so is where it rides, as an
      INPUT trailer (3.4). The interval is not: every frame costs

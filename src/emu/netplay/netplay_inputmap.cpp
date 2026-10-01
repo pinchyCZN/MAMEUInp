@@ -241,6 +241,21 @@ const inputmap::port_entry *inputmap::find(const ioport_port &port) const
 
 
 //-------------------------------------------------
+//  local_bit_mask
+//-------------------------------------------------
+
+u32 inputmap::local_bit_mask() const
+{
+	u32 mask = 0;
+	for (const port_entry &pe : m_ports)
+		for (const owned &o : pe.fields)
+			if (o.player == LOCAL_SLOT)
+				mask |= u32(1) << o.bit;
+	return mask;
+}
+
+
+//-------------------------------------------------
 //  capture_port - local input for one port into
 //  the pending word
 //-------------------------------------------------

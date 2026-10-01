@@ -68,6 +68,10 @@ public:
 	unsigned analog_seen() const { return m_analog_seen; }
 	unsigned unowned() const { return unsigned(m_unowned.size()); }
 
+	// digital bits LOCAL_SLOT owns; the self-check compares only these
+	// because capture_port reads that slot's fields and no other
+	u32 local_bit_mask() const;
+
 	// Called per port from inside ioport_manager::frame_update's loop.
 	// CAPTURE BEFORE INJECT in the same iteration, or the capture reads back
 	// the remote values just written.

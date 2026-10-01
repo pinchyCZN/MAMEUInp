@@ -448,6 +448,14 @@ work. CPS1 is integer-only in the emulated path, two-player, save-state clean,
 and it is the hardware already understood from the CDINO work - so nothing
 extraneous muddies a desync.
 
+**Smooth playback beats low input latency.** A stutter is worse than 200 ms of
+lag. Where the two conflict, spend latency - this is a design principle, not a
+default, and it settles arguments. Modern emulator netplay is tuned for
+fighting games, where a lost input costs one move against an opponent who also
+missed it. In a co-op game the shared state is a world full of AI reacting to
+player input, so a lost input compounds instead of cancelling. The measured
+arithmetic is `notes/protocol.txt` 1.6.3; the rationale is 1.6.4.
+
 **Lockstep before rollback.** Get two instances bit-identical on a fixed input
 delay first. Rollback reuses the same wire protocol and only changes client
 speculation; building it first means debugging two unknowns at once.

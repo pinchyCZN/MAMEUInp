@@ -91,7 +91,8 @@
 ***************************************************************************/
 
 #include "emu.h"
-#include "netplay/netplay_hash.h"   // NETPLAY
+#include "netplay/netplay_hash.h"      // NETPLAY
+#include "netplay/netplay_manager.h"   // NETPLAY
 #include "emuopts.h"
 #include "config.h"
 #include "xmlfile.h"
@@ -2056,6 +2057,16 @@ g_profiler.start(PROFILER_INPUT);
 	{
 		port.second->frame_update();
 
+		// NETPLAY: capture this port's local bits for the frame being built,
+		// then overwrite the port with the synchronised input for the frame
+		// being run. CAPTURE MUST PRECEDE INJECT or it reads back what
+		// inject just wrote. Placed before record_port so a recorded netplay
+		// session replays the synchronised values rather than local ones.
+		// No-ops unless a session is running.
+		// See src/emu/netplay/netplay_manager.h.
+		netplay::manager::port_capture(*port.second.get());
+		netplay::manager::port_inject(*port.second.get());
+
 		// handle playback/record
 		playback_port(*port.second.get());
 		record_port(*port.second.get());
@@ -2066,6 +2077,11 @@ g_profiler.start(PROFILER_INPUT);
 			if (dynfield.field().type() != IPT_OUTPUT)
 				dynfield.write(newvalue);
 	}
+
+	// NETPLAY: publish the word captured above as input for a later frame,
+	// then advance. Must follow the loop: a player's word spans ports, so
+	// it is only complete once every port has been visited.
+	netplay::manager::frame_end(machine());
 
 	// NETPLAY: fingerprint machine state once per frame, after input for the
 	// frame has been applied - the same point netplay will inject at, so the

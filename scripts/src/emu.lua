@@ -194,6 +194,8 @@ files {
 	MAME_DIR .. "src/emu/netplay/netplay_hash.h",
 	MAME_DIR .. "src/emu/netplay/netplay_inputmap.cpp",
 	MAME_DIR .. "src/emu/netplay/netplay_inputmap.h",
+	MAME_DIR .. "src/emu/netplay/netplay_manager.cpp",
+	MAME_DIR .. "src/emu/netplay/netplay_manager.h",
 	MAME_DIR .. "src/emu/netplay/netplay_mix.h",
 	MAME_DIR .. "src/emu/netplay/netplay_types.h",
 	MAME_DIR .. "src/emu/save.cpp",
