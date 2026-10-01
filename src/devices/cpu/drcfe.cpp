@@ -27,6 +27,22 @@ namespace {
 
 constexpr u32 MAX_STACK_DEPTH = 100;
 
+// NETPLAY: backstop for describe_one's delay-slot recursion, which is
+// otherwise unbounded. MAX_STACK_DEPTH does not cover it: that bounds the
+// iterative branch-target stack in describe_code, and describe_one never
+// touches m_desc_array, so describe_code's visited-pc check does not reach
+// the recursion either. Real hardware has one or two delay slots, so
+// legitimate nesting is shallow.
+constexpr u32 MAX_DELAY_SLOT_DEPTH = 32;
+
+u32 s_delay_depth = 0;
+
+struct delay_depth_guard
+{
+	delay_depth_guard() { ++s_delay_depth; }
+	~delay_depth_guard() { --s_delay_depth; }
+};
+
 
 
 //**************************************************************************
@@ -203,8 +219,20 @@ opcode_desc *drc_frontend::describe_one(offs_t curpc, opcode_desc const *prevdes
 		// iterate over slots and describe them
 		offs_t delaypc = curpc + desc->length;
 		// If this is a delay slot it is the true branch fork and the pc should be the previous branch target
+		// NETPLAY: and only if that target advances. A branch in a delay slot
+		// whose target is its own pc redirects delaypc to the pc being
+		// described, so it recurses on one address until the stack is gone -
+		// rsgun (SH-2), after a savestate load. Falling back to the sequential
+		// pc is what the dynamic-target case already does.
+		// Marking the opcode invalid instead is NOT an option: sh.cpp
+		// generate_sequence_instruction turns OPFLAG_INVALID_OPCODE into a
+		// fatalerror, and generate_delay_slot asserts desc->delay is
+		// non-empty, so a branch must always leave here with a described
+		// delay slot.
 		if (desc->flags & OPFLAG_IN_DELAY_SLOT) {
-			if (prevdesc->targetpc != BRANCH_TARGET_DYNAMIC) {
+			if ((prevdesc->targetpc != BRANCH_TARGET_DYNAMIC)
+				&& (prevdesc->targetpc != curpc)
+				&& (s_delay_depth <= MAX_DELAY_SLOT_DEPTH)) {
 				delaypc = prevdesc->targetpc;
 				//printf("drc_frontend::describe_one Branch in delay slot. curpc=%08X delaypc=%08X\n", curpc, delaypc);
 			} else {
@@ -212,6 +240,7 @@ opcode_desc *drc_frontend::describe_one(offs_t curpc, opcode_desc const *prevdes
 			}
 		}
 		opcode_desc *prev = desc;
+		delay_depth_guard const depth_guard;
 		for (u8 slotnum = 0; slotnum < desc->delayslots; slotnum++)
 		{
 			// recursively describe the next instruction

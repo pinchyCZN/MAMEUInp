@@ -29,7 +29,8 @@ Table of Contents
       1.4. NOWERROR did not work, so we made it work
       1.5. Variable-length arrays - 18 of them
       1.6. A const that was always wrong
-   2. Edits: netplay
+   2. Edits: netplay and upstream bugs
+      2.1. The DRC delay-slot recursion overflow
    3. Files we added
    4. Open questions
 
@@ -219,30 +220,96 @@ Table of Contents
    Windows 10 SDK. Not yet observed to break anything at 0.210.
    [verified that the define is there; effect unmeasured]
 
-2.  Edits: netplay
-
-   None yet.
-
-   Expected, when the core lands:
+2.  Edits: netplay and upstream bugs
 
    +------------------------------+--------------------------------+
-   | File                         | Expected change                |
+   | File                         | Change                         |
    +==============================+================================+
    | scripts/src/emu.lua          | add src/emu/netplay/* to the   |
    |                              | emu project. It lists its 227  |
    |                              | sources explicitly and does    |
    |                              | not glob. [verified]           |
    +------------------------------+--------------------------------+
-   | src/emu/ioport.cpp           | the input hook, in             |
+   | src/emu/ioport.cpp           | state-hash call at the end of  |
    |                              | ioport_manager::frame_update   |
-   |                              | alongside the existing         |
-   |                              | record/playback calls          |
    +------------------------------+--------------------------------+
-   | src/emu/emuopts.cpp / .h     | -netplay* options              |
+   | src/emu/emuopts.cpp / .h     | -netplay_hashlog and           |
+   |                              | -netplay_hashinterval. Also    |
+   |                              | restores cannonical_instance_  |
+   |                              | name() in add_and_remove_      |
+   |                              | image_options, which MESSUI    |
+   |                              | had replaced with device()->   |
+   |                              | tag() and which asserted for   |
+   |                              | arcade drivers.                |
+   +------------------------------+--------------------------------+
+   | src/devices/cpu/drcfe.cpp    | cycle guard on describe_one's  |
+   |                              | delay-slot recursion. Not      |
+   |                              | netplay; an upstream stack     |
+   |                              | overflow. See 2.1.             |
    +------------------------------+--------------------------------+
 
    Each one gets a contiguous block marked NETPLAY: so it is findable
-   by grep and re-appliable by hand.
+   by grep.
+
+2.1.  The DRC delay-slot recursion overflow
+
+   drc_frontend::describe_one recurses to describe the delay slots of a
+   branch. When the instruction in a delay slot is itself a branch, the
+   next pc comes from prevdesc->targetpc rather than from the current
+   pc, and that target can be a pc already in the chain - so it
+   recurses on the same address until the stack is exhausted.
+   [verified by reading drcfe.cpp]
+
+   MAX_STACK_DEPTH does not bound it. That constant guards the
+   iterative branch-target stack in describe_code; describe_one neither
+   reads nor writes m_desc_array, so describe_code's visited-pc check
+   does not apply to the recursion either. [verified]
+
+   Observed on rsgun (SH-2) immediately after loading a savestate, and
+   not on a cold boot. A savestate drops the pc into a block the DRC
+   has not compiled, so it describes a fresh sequence from there; on a
+   cold boot that code is reached through blocks already compiled from
+   entry points that do not hit the cycle. [inferred]
+
+   The cycle is a self-recursion on one address:
+
+       describe_one(X)       branch, delayslots=1, delaypc = X+2
+       describe_one(X+2)     branch in delay slot
+                             -> delaypc = desc_X->targetpc = T
+       describe_one(T)       branch in delay slot
+                             -> delaypc = desc_X+2->targetpc = T
+       describe_one(T)       -> delaypc = desc_T->targetpc = T
+       describe_one(T)       ... until the stack is gone
+
+   So the fix is to take the prevdesc->targetpc redirection only when
+   it advances: not when it equals curpc, and not past
+   MAX_DELAY_SLOT_DEPTH levels of nesting. Either way delaypc falls back
+   to curpc + desc->length, which is what the dynamic-target case
+   already does.
+
+   Two things that look like the obvious fix and are not:
+
+   o Marking the opcode OPFLAG_INVALID_OPCODE and returning, the way
+     the describe() failure path does. sh_common_execution::generate_
+     sequence_instruction turns that flag into fatalerror("SH2DRC:
+     invalid opcode!"), so it converts the overflow into a fatal
+     error rather than an interpreter fallback. [verified sh.cpp]
+
+   o Breaking out of the delay-slot loop before recursing.
+     sh_common_execution::generate_delay_slot asserts desc->delay.
+     first() is non-null and dereferences it, so a branch must always
+     leave describe_one with a described delay slot. [verified sh.cpp]
+
+   The depth is a file-scope counter in drcfe.cpp with an RAII guard,
+   not a parameter on describe_one. A signature change means touching
+   drcfe.h, which 11 CPU cores expose through their public headers -
+   269 translation units, 186 of them drivers, and with MSVC
+   precompiled headers off (build-config.txt 3.1) that is a long
+   rebuild for a four-line fix. The .cpp-only form costs one TU.
+
+   -drc 0 is the workaround if this ever proves insufficient.
+
+   Untouched upstream as of this writing; no MAMEdev fix found.
 
 3.  Files we added
 
