@@ -1,0 +1,117 @@
+// license:BSD-3-Clause
+// copyright-holders:MAMEUI Netplay
+/***************************************************************************
+
+    netplay_inputmap.h
+
+    The translation table: (player, logical input) <-> (port, mask).
+
+    This is the format. The wire payload is a per-player LOGICAL word, so
+    it is only meaningful alongside this table, and the table is built once
+    at session start because the metadata it needs - type() and player() -
+    lives on the fields and is gone by the time a port's digital value is
+    assembled. notes/protocol.txt 1.2, notes/netplay-hooks.txt 1.5.
+
+    Two rules, not one. Joysticks and buttons take the player from
+    field.player(); start and coin take it from the TYPE, because MAME
+    declares IPT_START1 and IPT_COIN1 in IPG_OTHER with player 0, so
+    routing them by player() sends every player's start to player 1.
+    netplay-hooks.txt 1.4.
+
+    DIGITAL ONLY. Analog injection needs analog_field's m_accum, which is
+    private with ioport_manager as its only relevant friend, so it needs an
+    upstream edit this does not yet make. Analog axes are counted and
+    reported so a driver that needs them is visible, and the word already
+    reserves four of them. [open] See netplay_types.h.
+
+***************************************************************************/
+
+#ifndef MAME_EMU_NETPLAY_NETPLAY_INPUTMAP_H
+#define MAME_EMU_NETPLAY_NETPLAY_INPUTMAP_H
+
+#pragma once
+
+#include "netplay/netplay_types.h"
+
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+
+namespace netplay {
+
+class inputmap
+{
+public:
+	// The local human drives THIS slot's fields whatever session slot they
+	// were given, because MAME's default sequences are disjoint per player
+	// and nobody should have to learn a different keyboard because they
+	// joined second. notes/protocol.txt 1.1
+	static constexpr player_t LOCAL_SLOT = 1;
+
+	inputmap();
+
+	// walks every port and field; returns false if the driver cannot be
+	// represented, which is a refused session, not a warning
+	bool build(running_machine &machine);
+
+	bool built() const { return m_built; }
+	bool fits() const { return m_fits; }
+
+	// handshake identity: two peers resolving (player, logical) to different
+	// (port, mask) pairs misroute each other's input while agreeing on every
+	// other digest. notes/protocol.txt 4.2
+	u64 digest() const { return m_digest; }
+
+	player_t players() const { return m_players; }
+	unsigned digital_used() const { return unsigned(m_logical.size()); }
+	unsigned analog_seen() const { return m_analog_seen; }
+	unsigned unowned() const { return unsigned(m_unowned.size()); }
+
+	// Called per port from inside ioport_manager::frame_update's loop.
+	// CAPTURE BEFORE INJECT in the same iteration, or the capture reads back
+	// the remote values just written.
+	void capture_port(ioport_port &port, input_word &word) const;
+	void inject_port(ioport_port &port, const input_word *words, player_t count) const;
+
+	std::string describe() const;
+
+	// DIAGNOSTIC one-shot: builds the table and writes describe() to the
+	// path in NETPLAY_INPUTMAP. Env-driven rather than an emu_option so
+	// this module stays a one-TU rebuild - emuopts.h reaches 179 TUs.
+	// The call site moves to netplay_manager when that lands. [open]
+	static void dump_once(running_machine &machine);
+
+private:
+	// a digital field one player owns
+	struct owned
+	{
+		ioport_value    mask;
+		player_t        player;         // 1-based
+		u8              bit;            // digital bit in the word
+	};
+
+	struct port_entry
+	{
+		ioport_port *       port;
+		std::string         tag;
+		std::vector<owned>  fields;
+		ioport_value        shared_mask;    // non-toggle digital, no player
+	};
+
+	const port_entry *find(const ioport_port &port) const;
+
+	std::vector<port_entry>                         m_ports;
+	std::unordered_map<const ioport_port *, u32>    m_index;
+	std::vector<u32>                                m_logical;  // bit -> logical id
+	std::vector<std::string>                        m_unowned;
+	u64                                             m_digest;
+	player_t                                        m_players;
+	unsigned                                        m_analog_seen;
+	bool                                            m_fits;
+	bool                                            m_built;
+};
+
+} // namespace netplay
+
+#endif // MAME_EMU_NETPLAY_NETPLAY_INPUTMAP_H

@@ -192,6 +192,10 @@ files {
 	-- NETPLAY: ours. emu.lua lists sources explicitly and does not glob.
 	MAME_DIR .. "src/emu/netplay/netplay_hash.cpp",
 	MAME_DIR .. "src/emu/netplay/netplay_hash.h",
+	MAME_DIR .. "src/emu/netplay/netplay_inputmap.cpp",
+	MAME_DIR .. "src/emu/netplay/netplay_inputmap.h",
+	MAME_DIR .. "src/emu/netplay/netplay_mix.h",
+	MAME_DIR .. "src/emu/netplay/netplay_types.h",
 	MAME_DIR .. "src/emu/save.cpp",
 	MAME_DIR .. "src/emu/save.h",
 	MAME_DIR .. "src/emu/schedule.cpp",

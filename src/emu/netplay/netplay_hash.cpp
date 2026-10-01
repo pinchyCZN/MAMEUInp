@@ -11,6 +11,8 @@
 #include "emu.h"
 #include "emuopts.h"                  // emu_options is not complete via emu.h
 #include "netplay/netplay_hash.h"
+#include "netplay/netplay_inputmap.h"
+#include "netplay/netplay_mix.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -19,59 +21,26 @@
 
 namespace {
 
-//-------------------------------------------------
-//  a 64-bit non-cryptographic hash
-//
-//  NOT util::crc32_creator, for two reasons: it is 32 bits, and it is
-//  table-driven a byte at a time. We hash the whole save state every frame -
-//  445 KB on CPS1, 24.8 MB on crystal.cpp (notes/protocol.txt 2.4) - so
-//  throughput is the binding constraint, and 64 bits puts an accidental
-//  collision at ~2^-64 per comparison instead of ~2^-32.
-//
-//  Mixing is xor-multiply-rotate per 8-byte word with a splitmix64-style
-//  finaliser, so a single flipped bit anywhere changes the result.
-//-------------------------------------------------
+// The mixing primitive lives in netplay_mix.h: the layout hash is handshake
+// identity (notes/protocol.txt 4.2), so there must be exactly one copy of it.
+using netplay::MIX_SEED;
+using netplay::mix_bytes;
+using netplay::finalise;
 
-constexpr u64 HASH_SEED  = 0x9E3779B97F4A7C15ULL;
-constexpr u64 HASH_PRIME = 0xFF51AFD7ED558CCDULL;
-
-inline u64 rotl64(u64 x, int r) { return (x << r) | (x >> (64 - r)); }
-
-inline u64 hash_finalise(u64 h)
+// MAME writes an unset string option into an ini as the key padded with
+// spaces, so the value comes back as whitespace rather than empty. Testing
+// only the first byte treats that as a filename and opens a file called
+// "   " beside the exe.
+bool option_unset(const char *v)
 {
-	h ^= h >> 33;
-	h *= 0xFF51AFD7ED558CCDULL;
-	h ^= h >> 33;
-	h *= 0xC4CEB9FE1A85EC53ULL;
-	h ^= h >> 33;
-	return h;
+	if (v == nullptr)
+		return true;
+	for ( ; *v != 0; v++)
+		if ((*v != 0x20) && (*v != 0x09))
+			return false;
+	return true;
 }
 
-u64 hash_bytes(u64 h, const void *data, size_t length)
-{
-	const u8 *p = reinterpret_cast<const u8 *>(data);
-
-	// whole 8-byte words; memcpy rather than a cast because the entries are
-	// device members and nothing guarantees 8-byte alignment
-	while (length >= 8)
-	{
-		u64 word;
-		std::memcpy(&word, p, sizeof(word));
-		h = rotl64((h ^ word) * HASH_PRIME, 29);
-		p += 8;
-		length -= 8;
-	}
-
-	// tail
-	if (length != 0)
-	{
-		u64 word = 0;
-		std::memcpy(&word, p, length);
-		h = rotl64((h ^ word) * HASH_PRIME, 29);
-	}
-
-	return h;
-}
 
 // one instance per machine; MAMEUI runs machines sequentially in-process, so
 // this is reset by the exit notifier rather than assumed to outlive one run
@@ -88,11 +57,16 @@ running_machine *s_owner = nullptr;
 
 void netplay_state_hash::frame_update(running_machine &machine)
 {
+	// Before the early-out below: the dump does not depend on the hash log.
+	// Diagnostic, env-gated, one shot. Moves to netplay_manager when that
+	// lands - see netplay_inputmap.h. [open]
+	netplay::inputmap::dump_once(machine);
+
 	if (&machine != s_owner)
 	{
 		// first frame of a new machine
 		const char *logpath = machine.options().netplay_hashlog();
-		if ((logpath == nullptr) || (*logpath == 0))
+		if (option_unset(logpath))
 			return;                         // disabled; do nothing at all
 
 		s_instance.reset(new netplay_state_hash(
@@ -158,8 +132,8 @@ u64 netplay_state_hash::compute_layout_hash() const
 	save_manager &save = m_machine.save();
 	const int count = save.registration_count();
 
-	u64 h = HASH_SEED;
-	h = hash_bytes(h, &count, sizeof(count));
+	u64 h = MIX_SEED;
+	h = mix_bytes(h, &count, sizeof(count));
 
 	for (int i = 0; i < count; i++)
 	{
@@ -169,12 +143,12 @@ u64 netplay_state_hash::compute_layout_hash() const
 		if (name == nullptr)
 			continue;
 
-		h = hash_bytes(h, name, std::strlen(name));
-		h = hash_bytes(h, &valsize, sizeof(valsize));
-		h = hash_bytes(h, &valcount, sizeof(valcount));
+		h = mix_bytes(h, name, std::strlen(name));
+		h = mix_bytes(h, &valsize, sizeof(valsize));
+		h = mix_bytes(h, &valcount, sizeof(valcount));
 	}
 
-	return hash_finalise(h);
+	return finalise(h);
 }
 
 
@@ -199,7 +173,7 @@ u64 netplay_state_hash::state_hash() const
 	// The cost is that state living only in unsaved derived variables is
 	// invisible here, so two genuinely divergent machines can agree for a
 	// frame or two. A persistent desync still shows up almost immediately.
-	u64 h = HASH_SEED;
+	u64 h = MIX_SEED;
 
 	for (int i = 0; i < count; i++)
 	{
@@ -210,10 +184,10 @@ u64 netplay_state_hash::state_hash() const
 		if (base == nullptr)
 			continue;
 
-		h = hash_bytes(h, base, size_t(valsize) * size_t(valcount));
+		h = mix_bytes(h, base, size_t(valsize) * size_t(valcount));
 	}
 
-	return hash_finalise(h);
+	return finalise(h);
 }
 
 
@@ -306,7 +280,7 @@ void netplay_state_hash::dump_entries(u64 frame)
 		if ((name == nullptr) || (base == nullptr))
 			continue;
 
-		const u64 h = hash_finalise(hash_bytes(HASH_SEED, base,
+		const u64 h = finalise(mix_bytes(MIX_SEED, base,
 				size_t(valsize) * size_t(valcount)));
 
 		// names carry '/' and ':' but not ',', so plain CSV is safe
