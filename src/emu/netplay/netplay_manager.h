@@ -111,8 +111,12 @@ private:
 	void publish(frame_t frame, player_t player, input_word word);
 	void batch_add(input_word word, frame_t frame);
 	void batch_flush();
+	void resend_last();
 	void poll_link();
 	void wait_for_input();
+	bool gated_now() const;
+	const char *missing_text();
+	void test_pause_tick();
 	void apply_ui_command();
 	void send_uicmd(u8 cmd);
 	void check_selftest();
@@ -148,7 +152,6 @@ private:
 	// stalls and stall_frames are what a delay is chosen to drive to zero.
 	u64                         m_stalls;
 	u64                         m_stall_frames;
-	u64                         m_starved;
 	u64                         m_malformed;
 
 	// Set once a remote player's INPUT has actually been filed. Not the
@@ -177,6 +180,14 @@ private:
 	frame_t                     m_test_pause_at;
 	unsigned                    m_test_pause_hold;
 	u64                         m_test_held;
+
+	// Hold bookkeeping. A held session sends nothing of its own - no frame
+	// completes, so nothing is captured - and a server that tracks liveness
+	// would drop everyone. m_held_polls paces both the keepalive and the
+	// warning the player sees.
+	u64                         m_held_polls;
+	u64                         m_waits;
+	char                        m_missing[96];
 
 	bool                        m_selftest;
 	u64                         m_selftest_fail;

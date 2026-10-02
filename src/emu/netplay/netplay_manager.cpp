@@ -86,7 +86,6 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_prev_n(0)
 	, m_stalls(0)
 	, m_stall_frames(0)
-	, m_starved(0)
 	, m_malformed(0)
 	, m_got_remote(false)
 	, m_stall_limit(STALL_LIMIT)
@@ -98,6 +97,8 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_test_pause_at(0)
 	, m_test_pause_hold(0)
 	, m_test_held(0)
+	, m_held_polls(0)
+	, m_waits(0)
 	, m_selftest(selftest)
 	, m_selftest_fail(0)
 	, m_log(nullptr)
@@ -105,6 +106,7 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	std::memset(m_ring, 0, sizeof(m_ring));
 	std::memset(m_out, 0, sizeof(m_out));
 	std::memset(m_prev, 0, sizeof(m_prev));
+	m_missing[0] = 0;
 
 	for (player_t p = 1; p <= m_players; p++)
 		m_need = u8(m_need | slot_bit(p));
@@ -424,6 +426,38 @@ void manager::batch_flush()
 
 
 //-------------------------------------------------
+//  resend_last - keepalive that is also redundancy
+//-------------------------------------------------
+
+void manager::resend_last()
+{
+	// A held frame produces no new input, so there is nothing fresh to
+	// send - but going quiet makes a liveness-tracking server drop the
+	// session (measured: a pause longer than the server timeout ended the
+	// game). Repeating the last batch costs one datagram, is idempotent on
+	// the receiver because publish() ignores frames already run and
+	// rewrites identical words, and doubles as loss repair.
+	if (!m_link || (m_prev_n == 0))
+		return;
+
+	u8 buf[MAX_DATAGRAM];
+	packet_header head;
+	head.type = MSG_INPUT;
+	head.version = PROTOCOL_VERSION;
+	head.session = 0;
+	head.base_frame = m_prev_base;
+	head.nframes = u8(m_prev_n);
+	head.player_mask = slot_bit(m_local);
+	head.flags = FLAG_REDUNDANT;
+	head.reserved = 0;
+
+	const size_t len = build_input(buf, sizeof(buf), head, m_prev, nullptr);
+	if (len != 0)
+		m_link->send(buf, len);
+}
+
+
+//-------------------------------------------------
 //  poll_link - drain whatever has arrived
 //-------------------------------------------------
 
@@ -597,98 +631,146 @@ void manager::wait_for_input()
 	const bool gated = (m_link && !m_link->ready());
 
 	if (!gated && !m_net_paused && complete(m_frame))
+	{
+		m_held_polls = 0;
 		return;
+	}
 
-	// This is the stutter. Every frame counted here is a frame the player
-	// saw the picture stop, and driving this to zero is what the delay is
-	// chosen for. notes/protocol.txt 1.6.3
 	if (!m_net_paused)
 		m_stalls++;
-
-	// Frame 0 is a different problem from every other frame: the peers are
-	// still launching, so the first wait is seconds rather than milliseconds.
-	// One limit cannot serve both, so the budget is generous until the first
-	// remote packet has ever arrived and tight afterwards.
-	const unsigned limit = m_got_remote ? m_stall_limit : m_join_limit;
 
 	// PAUSE AROUND THE WAIT, and the reason is determinism, not tidiness.
 	//
 	// A held frame still has to service the window: the window lives on its
-	// own thread and reaches the main thread by SendMessage, so a main thread
-	// asleep in a loop stops the display responding. video_manager::
+	// own thread and reaches the main thread by SendMessage, so a main
+	// thread asleep in a loop stops the display responding. video_manager::
 	// frame_update is how MAME pumps it, and the debugger uses exactly this
 	// to stay alive while the emulation is stopped.
 	//
-	// LANDMINE: from_debugger=true does NOT make that call side-effect free.
-	// finish_screen_updates() runs whenever the machine is RUNNING and not
-	// paused, and it writes screen partial-update state that IS part of the
-	// save set. Measured on two peers: pumping unpaused left
+	// LANDMINE: from_debugger=true does NOT make that call side-effect
+	// free. finish_screen_updates() runs whenever the machine is RUNNING
+	// and not paused, and it writes screen partial-update state that IS
+	// part of the save set. Measured on two peers: pumping unpaused left
 	// Video Screen/:screen/0/m_last_partial_scan and
-	// timer/:screen/2/0/m_start.attoseconds different between them - 2 of 931
-	// entries - purely because one peer stalled more often than the other.
-	// Pausing first is what makes the pump safe, because the paused check is
-	// what skips the screen work.
+	// timer/:screen/2/0/m_start.attoseconds different between them - 2 of
+	// 931 entries - purely because one peer stalled more often than the
+	// other. Pausing first is what makes the pump safe.
 	const bool was_paused = m_machine.paused();
 	if (!was_paused)
 		m_machine.pause();
 
-	unsigned spins = 0;
-	while (m_net_paused || (m_link && !m_link->ready()) || !complete(m_frame))
+	u64 since_keepalive = 0;
+
+	while (m_net_paused || gated_now() || !complete(m_frame))
 	{
+		// THE USER MUST ALWAYS BE ABLE TO LEAVE. Escape and the window close
+		// button set this flag through the UI, which keeps running because
+		// the pump below calls draw_user_interface. Without this check a
+		// held session is unkillable except from Task Manager - observed.
+		if (m_machine.exit_pending() || m_machine.scheduled_event_pending())
+			break;
+
 		if (!m_link || !m_link->wait())
 			break;
 
 		// ~60 Hz, not on every poll: wait() returns about every millisecond,
 		// and pumping that often renders a thousand frames a second.
-		if ((spins % 16) == 0)
+		if ((m_held_polls % 16) == 0)
 			m_machine.video().frame_update(true);
 
 		poll_link();
 		apply_ui_command();
 
-		// A netplay pause is deliberate, not a late packet. It must not
-		// count as a stall and must never time out into starvation, or
-		// holding the picture still to look at it would desync the session.
-		if (m_net_paused)
+		m_held_polls++;
+		since_keepalive++;
+
+		// wait() is about a millisecond, so this is roughly twice a second.
+		if (since_keepalive >= 500)
 		{
-			// DIAGNOSTIC: a real session is resumed by a keypress, which the
-			// UI can still deliver because the pump runs
-			// draw_user_interface. A headless test has no keypress, and it
-			// cannot count frames either - they do not advance while held -
-			// so it counts poll iterations instead.
-			if (m_test_pause_hold != 0)
-			{
-				m_test_held++;
-				if (m_test_held > (m_test_pause_hold * 17))
-				{
-					m_test_held = 0;
-					m_test_pause_hold = 0;    // once only
-					ui_request(m_machine, UICMD_PAUSE_TOGGLE);
-				}
-			}
-			spins = 0;
-			continue;
+			since_keepalive = 0;
+			resend_last();
 		}
 
-		m_stall_frames++;
-		if (++spins >= limit)
-			break;
+		// NEVER SYNTHESIZE INPUT. Substituting a neutral word for a player
+		// whose packet has not arrived desyncs the session silently and
+		// permanently: this peer runs the frame with nothing pressed while
+		// the owner runs it with whatever they actually pressed. Waiting is
+		// the only honest option, so say what is happening and keep waiting.
+		if (!m_net_paused && ((m_held_polls % 3000) == 0))
+		{
+			m_waits++;
+			m_machine.popmessage("Waiting for %s (frame %u, %llu s)\n\nEscape to quit.",
+					missing_text(), unsigned(m_frame),
+					static_cast<unsigned long long>(m_held_polls / 1000));
+		}
+
+		if (m_test_pause_hold != 0)
+			test_pause_tick();
 	}
 
 	if (!was_paused)
 		m_machine.resume();
 
-	if (!complete(m_frame))
-	{
-		// Running a frame on incomplete input is a desync: this peer applies
-		// a neutral word where the owner applied something else. Counted,
-		// not hidden - resync is the answer and does not exist yet. [open]
-		m_starved++;
-		touch(m_frame);
-		at(m_frame).have = m_need;
-	}
+	if (!m_net_paused && complete(m_frame))
+		m_machine.popmessage("");      // clear the warning
+
+	m_held_polls = 0;
 }
 
+
+//-------------------------------------------------
+//  gated_now / missing_text / test_pause_tick
+//-------------------------------------------------
+
+bool manager::gated_now() const
+{
+	return (m_link != nullptr) && !m_link->ready();
+}
+
+
+const char *manager::missing_text()
+{
+	// Names the slots whose word has not arrived, so the message says who
+	// to go and look at rather than just that something is wrong.
+	const slot &sl = at(m_frame);
+	const bool stamped = (sl.stamp == m_frame);
+	size_t used = 0;
+
+	m_missing[0] = 0;
+	for (player_t p = 1; p <= m_players; p++)
+	{
+		if (stamped && ((sl.have & slot_bit(p)) != 0))
+			continue;
+		const int n = snprintf(m_missing + used, sizeof(m_missing) - used,
+				"%splayer %d", (used != 0) ? ", " : "", int(p));
+		if (n <= 0)
+			break;
+		used += size_t(n);
+		if (used >= (sizeof(m_missing) - 1))
+			break;
+	}
+
+	if (m_missing[0] == 0)
+		snprintf(m_missing, sizeof(m_missing), "the session to start");
+	return m_missing;
+}
+
+
+void manager::test_pause_tick()
+{
+	// DIAGNOSTIC: a real session is resumed by a keypress, which the UI can
+	// still deliver because the pump runs draw_user_interface. A headless
+	// test has no keypress and cannot count frames either - they do not
+	// advance while held - so it counts poll iterations.
+	if (!m_net_paused)
+		return;
+	m_test_held++;
+	if (m_test_held <= (m_test_pause_hold * 17))
+		return;
+	m_test_held = 0;
+	m_test_pause_hold = 0;              // once only
+	ui_request(m_machine, UICMD_PAUSE_TOGGLE);
+}
 
 //-------------------------------------------------
 //  check_selftest - is injection the inverse of
@@ -820,11 +902,11 @@ void manager::on_exit()
 	}
 
 	osd_printf_info("netplay: %u frames, stalls=%llu stall_frames=%llu "
-			"starved=%llu malformed=%llu sent=%llu recv=%llu dropped=%llu\n",
+			"waits=%llu malformed=%llu sent=%llu recv=%llu dropped=%llu\n",
 			unsigned(m_frame),
 			static_cast<unsigned long long>(m_stalls),
 			static_cast<unsigned long long>(m_stall_frames),
-			static_cast<unsigned long long>(m_starved),
+			static_cast<unsigned long long>(m_waits),
 			static_cast<unsigned long long>(m_malformed),
 			static_cast<unsigned long long>(m_link ? m_link->sent_count() : 0),
 			static_cast<unsigned long long>(m_link ? m_link->recv_count() : 0),
