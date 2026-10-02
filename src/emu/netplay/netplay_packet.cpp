@@ -75,7 +75,7 @@ bool parse_header(const u8 *buf, size_t len, packet_header &head)
 	head.reserved = get_u8(buf + 11);
 
 	// A zero type is always malformed - see the numbering note in the header.
-	if ((head.type == 0) || (head.type > MSG_BYE))
+	if ((head.type == 0) || (head.type > MSG_UICMD))
 		return false;
 	if (head.version != PROTOCOL_VERSION)
 		return false;
@@ -275,6 +275,46 @@ const char *refuse_text(u8 reason)
 	case REFUSE_RUNNING:  return "session already started";
 	case REFUSE_TOOWIDE:  return "driver needs more than 64 bits per player";
 	default:              return "unknown reason";
+	}
+}
+
+
+//-------------------------------------------------
+//  UI commands
+//-------------------------------------------------
+
+size_t build_uicmd(u8 *buf, size_t cap, u16 session, frame_t effective, u8 cmd)
+{
+	const size_t len = control_head(buf, cap, MSG_UICMD, session, effective, 4);
+	if (len == 0)
+		return 0;
+	put_u8(buf + HEADER_BYTES + 0, cmd);
+	put_u8(buf + HEADER_BYTES + 1, 0);
+	put_u16(buf + HEADER_BYTES + 2, 0);
+	return len;
+}
+
+
+bool parse_uicmd(const u8 *buf, size_t len, frame_t &effective, u8 &cmd)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_UICMD))
+		return false;
+	if (len != UICMD_BYTES)
+		return false;
+	effective = head.base_frame;
+	cmd = get_u8(buf + HEADER_BYTES);
+	return true;
+}
+
+
+const char *uicmd_text(u8 cmd)
+{
+	switch (cmd)
+	{
+	case UICMD_PAUSE_TOGGLE: return "pause toggle";
+	case UICMD_SOFT_RESET:   return "soft reset";
+	default:                 return "unknown";
 	}
 }
 

@@ -57,6 +57,12 @@ public:
 	static void port_inject(ioport_port &port);
 	static void frame_end(running_machine &machine);
 
+	// Originates a frame-stamped UI command. Returns true when netplay has
+	// taken the request, in which case the caller must NOT act locally -
+	// the command applies on every peer including this one, at the stamped
+	// frame. Returns false with no session, so MAME behaves normally.
+	static bool ui_request(running_machine &machine, u8 cmd);
+
 	// public only because std::unique_ptr holds one; construction stays
 	// private so a session can only come from open_session()
 	~manager();
@@ -107,6 +113,8 @@ private:
 	void batch_flush();
 	void poll_link();
 	void wait_for_input();
+	void apply_ui_command();
+	void send_uicmd(u8 cmd);
 	void check_selftest();
 	void on_exit();
 
@@ -150,6 +158,25 @@ private:
 	bool                        m_got_remote;
 	unsigned                    m_stall_limit;
 	unsigned                    m_join_limit;
+
+	// A frame-stamped UI command waiting to take effect, and the netplay
+	// pause state. NOT machine().pause(): a machine paused that way stops
+	// the scheduler, so ioport_manager::frame_update never runs and the
+	// RESUME could never be seen. Holding the frame in wait_for_input
+	// instead keeps the link polled and the display pumped.
+	frame_t                     m_cmd_frame;
+	u8                          m_cmd;
+	bool                        m_cmd_pending;
+	bool                        m_net_paused;
+
+	// DIAGNOSTIC. A UI command normally comes from a keypress, which a
+	// headless test cannot produce, so NETPLAY_TEST_PAUSE_AT asks for one
+	// at a given frame and NETPLAY_TEST_PAUSE_HOLD asks for the matching
+	// resume. The point of the frame stamp is that it is exact, and that
+	// is not something to ship untested.
+	frame_t                     m_test_pause_at;
+	unsigned                    m_test_pause_hold;
+	u64                         m_test_held;
 
 	bool                        m_selftest;
 	u64                         m_selftest_fail;

@@ -9,6 +9,7 @@
 *********************************************************************/
 
 #include "emu.h"
+#include "netplay/netplay_manager.h"   // NETPLAY
 #include "mame.h"
 #include "emuopts.h"
 #include "mameopts.h"
@@ -1148,8 +1149,13 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 	// handle a reset request
 	if (machine().ui_input().pressed(IPT_UI_RESET_MACHINE))
 		machine().schedule_hard_reset();
+	// NETPLAY: a soft reset has to happen on the same frame everywhere or
+	// the peers diverge, so netplay takes the request, stamps it with a
+	// frame and broadcasts it. ui_request returns false with no session.
+	// See src/emu/netplay/netplay_manager.h.
 	if (machine().ui_input().pressed(IPT_UI_SOFT_RESET))
-		machine().schedule_soft_reset();
+		if (!netplay::manager::ui_request(machine(), netplay::UICMD_SOFT_RESET))
+			machine().schedule_soft_reset();
 
 	// handle a request to display graphics/palette
 	if (machine().ui_input().pressed(IPT_UI_SHOW_GFX))
@@ -1198,8 +1204,12 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 		machine().video().save_active_screen_snapshots();
 
 	// toggle pause
+	// NETPLAY: pausing one peer stops it publishing input, which starves
+	// the others and desyncs the session. Frame-stamped and broadcast so
+	// everyone pauses on the same frame instead.
 	if (machine().ui_input().pressed(IPT_UI_PAUSE))
-		machine().toggle_pause();
+		if (!netplay::manager::ui_request(machine(), netplay::UICMD_PAUSE_TOGGLE))
+			machine().toggle_pause();
 
 	// pause single step
 	if (machine().ui_input().pressed(IPT_UI_PAUSE_SINGLE))

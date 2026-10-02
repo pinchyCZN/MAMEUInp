@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 #if defined(_WIN32)
@@ -76,6 +77,10 @@ namespace {
 
 constexpr unsigned DEFAULT_PORT = 7000;
 
+// A peer that has said nothing for this long is gone. Input flows every
+// frame in a live session, so silence this long is not jitter.
+constexpr time_t CLIENT_TIMEOUT = 15;
+
 struct client
 {
 	bool                used;
@@ -84,8 +89,9 @@ struct client
 	u64                 layout;
 	std::string         driver;
 	u64                 packets;
+	time_t              last_seen;
 
-	client() : used(false), inputmap(0), layout(0), packets(0)
+	client() : used(false), inputmap(0), layout(0), packets(0), last_seen(0)
 	{
 		std::memset(&addr, 0, sizeof(addr));
 	}
@@ -142,6 +148,7 @@ private:
 	void send_to(const struct sockaddr_in &to, const u8 *buf, size_t len);
 	void refuse(const struct sockaddr_in &to, u8 reason);
 	void broadcast_start();
+	void sweep();
 	int find(const struct sockaddr_in &from) const;
 
 	np_socket   m_sock;
@@ -238,6 +245,7 @@ void relay::on_join(const struct sockaddr_in &from, const u8 *buf, size_t len)
 	const int existing = find(from);
 	if (existing >= 0)
 	{
+		m_client[existing].last_seen = time(nullptr);
 		welcome_payload wp;
 		wp.slot = u8(existing + 1);
 		wp.players = m_players;
@@ -316,6 +324,7 @@ void relay::on_join(const struct sockaddr_in &from, const u8 *buf, size_t len)
 	m_client[slot].inputmap = jp.inputmap;
 	m_client[slot].layout = jp.layout;
 	m_client[slot].driver = driver;
+	m_client[slot].last_seen = time(nullptr);
 	m_joined++;
 
 	std::printf("  joined %s as player %u of %d (%s, map %016llx)\n",
@@ -359,6 +368,7 @@ void relay::on_input(const struct sockaddr_in &from, const u8 *buf, size_t len)
 		return;         // not a member of this session
 
 	m_client[who].packets++;
+	m_client[who].last_seen = time(nullptr);
 
 	// Forwarded VERBATIM. The packet already says which slot it belongs to,
 	// so there is nothing to rewrite, and not rewriting means the server
@@ -373,17 +383,81 @@ void relay::on_input(const struct sockaddr_in &from, const u8 *buf, size_t len)
 }
 
 
+//-------------------------------------------------
+//  sweep - drop the departed, and recycle the
+//  session so the server outlives it
+//-------------------------------------------------
+
+void relay::sweep()
+{
+	const time_t now = time(nullptr);
+	unsigned live = 0;
+
+	for (unsigned i = 0; i < MAX_PLAYERS; i++)
+	{
+		if (!m_client[i].used)
+			continue;
+		if ((now - m_client[i].last_seen) > CLIENT_TIMEOUT)
+		{
+			std::printf("  player %u timed out after %llu packet(s)\n",
+					i + 1,
+					static_cast<unsigned long long>(m_client[i].packets));
+			m_client[i] = client();
+			if (m_joined > 0)
+				m_joined--;
+		}
+		else
+		{
+			live++;
+		}
+	}
+
+	// THE SESSION IS RECYCLED, NOT THE PROCESS. Once started, a session
+	// refuses new joins (4.4 REFUSE_RUNNING), so without this the server
+	// would be useless after one game and need restarting. A fresh session
+	// id makes stray packets from the old one identifiable.
+	if (m_started && (live == 0))
+	{
+		m_session++;
+		m_started = false;
+		m_joined = 0;
+		std::printf("\nsession over - relayed %llu packet(s). Waiting for %d player(s),\n",
+				static_cast<unsigned long long>(m_relayed), int(m_players));
+		std::printf("session %u.\n", unsigned(m_session));
+		m_relayed = 0;
+	}
+}
+
+
 void relay::run()
 {
 	u8 buf[MAX_DATAGRAM];
 
+	// NEVER RETURNS. select() rather than a blocking recvfrom so the sweep
+	// above runs even when nothing is arriving.
 	for ( ; ; )
 	{
+		fd_set rd;
+		FD_ZERO(&rd);
+		FD_SET(m_sock, &rd);
+
+		struct timeval tv;
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+
+		const int ready = select(int(m_sock) + 1, &rd, nullptr, nullptr, &tv);
+		sweep();
+		if (ready <= 0)
+			continue;
+
 		struct sockaddr_in from;
 		np_socklen fromlen = sizeof(from);
 		const int n = recvfrom(m_sock, reinterpret_cast<char *>(buf), int(sizeof(buf)), 0,
 				reinterpret_cast<struct sockaddr *>(&from), &fromlen);
 
+		// On Windows a datagram sent to a closed port makes the NEXT
+		// recvfrom fail with WSAECONNRESET. Ignoring the error is correct;
+		// treating it as fatal would kill the server when a peer exits.
 		if (n <= 0)
 			continue;
 
@@ -401,6 +475,10 @@ void relay::run()
 			break;
 
 		case MSG_INPUT:
+		case MSG_UICMD:
+			// Both are forwarded verbatim. A UI command carries the frame it
+			// takes effect on, so the server has no more reason to understand
+			// it than it does an input word.
 			on_input(from, buf, size_t(n));
 			break;
 

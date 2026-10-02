@@ -91,6 +91,13 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_got_remote(false)
 	, m_stall_limit(STALL_LIMIT)
 	, m_join_limit(JOIN_STALL_LIMIT)
+	, m_cmd_frame(0)
+	, m_cmd(0)
+	, m_cmd_pending(false)
+	, m_net_paused(false)
+	, m_test_pause_at(0)
+	, m_test_pause_hold(0)
+	, m_test_held(0)
 	, m_selftest(selftest)
 	, m_selftest_fail(0)
 	, m_log(nullptr)
@@ -284,6 +291,8 @@ void manager::open_session(running_machine &machine)
 			env_flag("NETPLAY_SELFTEST")));
 
 	candidate->m_stall_limit = (sl > 0) ? sl : STALL_LIMIT;
+	candidate->m_test_pause_at = frame_t(env_uint("NETPLAY_TEST_PAUSE_AT", 0));
+	candidate->m_test_pause_hold = env_uint("NETPLAY_TEST_PAUSE_HOLD", 120);
 	if (sl > JOIN_STALL_LIMIT)
 		candidate->m_join_limit = sl;
 
@@ -433,6 +442,24 @@ void manager::poll_link()
 		u64 hash = 0;
 		bool has_hash = false;
 
+		frame_t eff = 0;
+		u8 cmd = 0;
+		if (parse_uicmd(buf, len, eff, cmd))
+		{
+			// A command the originator also applies, so it is not re-sent
+			// here. First one wins: a second arriving before the first has
+			// taken effect would otherwise silently replace it.
+			if (!m_cmd_pending)
+			{
+				m_cmd_frame = eff;
+				m_cmd = cmd;
+				m_cmd_pending = true;
+				osd_printf_info("netplay: %s scheduled for frame %u\n",
+						uicmd_text(cmd), unsigned(eff));
+			}
+			continue;
+		}
+
 		if (!parse_input(buf, len, head, words,
 				sizeof(words) / sizeof(words[0]), hash, has_hash))
 		{
@@ -457,12 +484,111 @@ void manager::poll_link()
 
 
 //-------------------------------------------------
+//  apply_ui_command - at the stamped frame, on every
+//  peer, including the one that asked
+//-------------------------------------------------
+
+void manager::apply_ui_command()
+{
+	if (!m_cmd_pending)
+		return;
+
+	// Nothing to do until the frame arrives. A stamp already behind us is
+	// a bug in the margin ui_request() picks, not something to swallow:
+	// pausing late is harmless but resetting late desyncs, so say so.
+	if (m_frame < m_cmd_frame)
+		return;
+	if (m_frame > m_cmd_frame)
+		osd_printf_warning("netplay: %s stamped for frame %u arrived at %u\n",
+				uicmd_text(m_cmd), unsigned(m_cmd_frame), unsigned(m_frame));
+
+	const u8 cmd = m_cmd;
+	m_cmd_pending = false;
+
+	switch (cmd)
+	{
+	case UICMD_PAUSE_TOGGLE:
+		m_net_paused = !m_net_paused;
+		osd_printf_info("netplay: %s at frame %u\n",
+				m_net_paused ? "paused" : "resumed", unsigned(m_frame));
+		break;
+
+	case UICMD_SOFT_RESET:
+		// Deterministic because every peer does it before the same frame.
+		// The input ring is untouched: words already published for later
+		// frames stay valid, since a reset does not change frame numbering.
+		osd_printf_info("netplay: soft reset at frame %u\n", unsigned(m_frame));
+		m_machine.schedule_soft_reset();
+		break;
+
+	default:
+		break;
+	}
+}
+
+
+//-------------------------------------------------
+//  send_uicmd / ui_request
+//-------------------------------------------------
+
+void manager::send_uicmd(u8 cmd)
+{
+	// Normally far enough ahead that every peer still has the frame in
+	// front of it: lockstep keeps peers within about m_delay frames of each
+	// other, so twice the delay plus a margin covers the spread and the
+	// flight time.
+	//
+	// A RESUME IS THE EXCEPTION AND MUST BE STAMPED FOR NOW. While the
+	// session is held no frames pass, so a resume stamped for a future
+	// frame can never come due and the pause is permanent. Stamping it for
+	// the current frame is still deterministic: every peer is held on the
+	// SAME frame, because that is the frame the pause was stamped for.
+	const bool resuming = m_net_paused && (cmd == UICMD_PAUSE_TOGGLE);
+	const frame_t eff = resuming
+			? m_frame
+			: (m_frame + frame_t((m_delay * 2) + 4));
+
+	m_cmd_frame = eff;
+	m_cmd = cmd;
+	m_cmd_pending = true;
+
+	if (!m_link)
+		return;
+
+	u8 buf[MAX_DATAGRAM];
+	const size_t len = build_uicmd(buf, sizeof(buf), 0, eff, cmd);
+	if (len != 0)
+		m_link->send(buf, len);
+
+	osd_printf_info("netplay: requested %s for frame %u\n",
+			uicmd_text(cmd), unsigned(eff));
+}
+
+
+bool manager::ui_request(running_machine &machine, u8 cmd)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return false;           // no session; let MAME act normally
+
+	// One at a time. Queueing them would mean deciding what a pause
+	// stacked behind a reset means, and there is no answer worth having.
+	if (m->m_cmd_pending)
+		return true;
+
+	m->send_uicmd(cmd);
+	return true;
+}
+
+
+//-------------------------------------------------
 //  wait_for_input - the lockstep stall
 //-------------------------------------------------
 
 void manager::wait_for_input()
 {
 	poll_link();
+	apply_ui_command();
 
 	// Nothing may run before the server releases the session. A word
 	// published while a peer has not joined is relayed to nobody and is
@@ -470,13 +596,14 @@ void manager::wait_for_input()
 	// desyncs both peers permanently. notes/protocol.txt 4.1
 	const bool gated = (m_link && !m_link->ready());
 
-	if (!gated && complete(m_frame))
+	if (!gated && !m_net_paused && complete(m_frame))
 		return;
 
 	// This is the stutter. Every frame counted here is a frame the player
 	// saw the picture stop, and driving this to zero is what the delay is
 	// chosen for. notes/protocol.txt 1.6.3
-	m_stalls++;
+	if (!m_net_paused)
+		m_stalls++;
 
 	// Frame 0 is a different problem from every other frame: the peers are
 	// still launching, so the first wait is seconds rather than milliseconds.
@@ -506,7 +633,7 @@ void manager::wait_for_input()
 		m_machine.pause();
 
 	unsigned spins = 0;
-	while ((m_link && !m_link->ready()) || !complete(m_frame))
+	while (m_net_paused || (m_link && !m_link->ready()) || !complete(m_frame))
 	{
 		if (!m_link || !m_link->wait())
 			break;
@@ -517,6 +644,32 @@ void manager::wait_for_input()
 			m_machine.video().frame_update(true);
 
 		poll_link();
+		apply_ui_command();
+
+		// A netplay pause is deliberate, not a late packet. It must not
+		// count as a stall and must never time out into starvation, or
+		// holding the picture still to look at it would desync the session.
+		if (m_net_paused)
+		{
+			// DIAGNOSTIC: a real session is resumed by a keypress, which the
+			// UI can still deliver because the pump runs
+			// draw_user_interface. A headless test has no keypress, and it
+			// cannot count frames either - they do not advance while held -
+			// so it counts poll iterations instead.
+			if (m_test_pause_hold != 0)
+			{
+				m_test_held++;
+				if (m_test_held > (m_test_pause_hold * 17))
+				{
+					m_test_held = 0;
+					m_test_pause_hold = 0;    // once only
+					ui_request(m_machine, UICMD_PAUSE_TOGGLE);
+				}
+			}
+			spins = 0;
+			continue;
+		}
+
 		m_stall_frames++;
 		if (++spins >= limit)
 			break;
@@ -571,6 +724,10 @@ void manager::frame_begin(running_machine &machine)
 	manager *const m = active();
 	if (m == nullptr)
 		return;
+
+	// DIAGNOSTIC: stand in for a keypress. See the header.
+	if ((m->m_test_pause_at != 0) && (m->m_frame == m->m_test_pause_at))
+		ui_request(machine, UICMD_PAUSE_TOGGLE);
 
 	m->wait_for_input();
 }

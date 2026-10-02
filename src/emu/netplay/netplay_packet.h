@@ -53,7 +53,8 @@ enum msg_type : u8
 	MSG_RESYNC  = 0x08,
 	MSG_STALL   = 0x09,
 	MSG_CHAT    = 0x0a,
-	MSG_BYE     = 0x0b
+	MSG_BYE     = 0x0b,
+	MSG_UICMD   = 0x0c
 };
 
 // 3.4
@@ -214,6 +215,30 @@ enum refuse_reason : u8
 };
 
 const char *refuse_text(u8 reason);
+
+// ---- UI commands ----
+//
+// Pause and soft reset, FRAME STAMPED. The stamp is the point: a bare
+// 'pause' would take effect on each peer whenever its packet landed, and
+// the peers would then be running different frames. base_frame carries the
+// frame the command takes effect before, so every peer acts at the same
+// place and a soft reset is as deterministic as any other input.
+//
+// NOT spare bits in the input word. notes/protocol.txt 1.5 retired that
+// Kaillera trick because it couples the UI protocol to each driver's port
+// layout to save a byte.
+enum ui_command : u8
+{
+	UICMD_PAUSE_TOGGLE = 0x01,
+	UICMD_SOFT_RESET   = 0x02
+};
+
+constexpr size_t UICMD_BYTES = HEADER_BYTES + 4;
+
+size_t build_uicmd(u8 *buf, size_t cap, u16 session, frame_t effective,
+		u8 cmd);
+bool parse_uicmd(const u8 *buf, size_t len, frame_t &effective, u8 &cmd);
+const char *uicmd_text(u8 cmd);
 
 // Bytes an INPUT packet of this shape occupies.
 inline size_t input_bytes(unsigned nframes, u8 player_mask, bool hash)
