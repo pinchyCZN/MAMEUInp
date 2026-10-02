@@ -37,6 +37,7 @@ Table of Contents
       5.1. Two startup screens, one option
       5.2. NVRAM that needs a boot to initialise
    6. What netplay has to disable
+      6.1. Key remapping stays, and costs nothing
    7. Files we expect to touch
    8. Open questions
 
@@ -394,26 +395,55 @@ Table of Contents
 
 6.  What netplay has to disable
 
-   +---------------------+----------------------------------------------+
-   | Disable             | Why                                          |
-   +=====================+==============================================+
-   | pause               | m_paused gates the run loop in               |
-   |                     | running_machine, so a local pause stalls     |
-   |                     | that peer and therefore lockstep for         |
-   |                     | everyone. [verified: machine.cpp]            |
-   +---------------------+----------------------------------------------+
-   | frameskip           | it perturbs emulated state on several        |
-   |                     | drivers - determinism.txt 3. Not merely a    |
-   |                     | pacing setting.                              |
-   +---------------------+----------------------------------------------+
-   | savestate load      | silently replaces the machine state under    |
-   |                     | one peer                                     |
-   +---------------------+----------------------------------------------+
-   | throttle, -speed    | pacing only, but a peer running unthrottled  |
-   |                     | starves the others of wall-clock budget      |
-   +---------------------+----------------------------------------------+
-   | the startup screens | 5.1                                          |
-   +---------------------+----------------------------------------------+
+   +------------------------+-------------------------------------------+
+   | Disable                | Why                                       |
+   +========================+===========================================+
+   | pause                  | m_paused gates the run loop in            |
+   +------------------------+-------------------------------------------+
+   |                        | running_machine, so a local pause stalls  |
+   +------------------------+-------------------------------------------+
+   |                        | that peer and therefore lockstep for      |
+   +------------------------+-------------------------------------------+
+   |                        | everyone. [verified: machine.cpp, and     |
+   +------------------------+-------------------------------------------+
+   |                        | observed - pausing one peer froze both]   |
+   +------------------------+-------------------------------------------+
+   | frameskip              | it perturbs emulated state on several     |
+   +------------------------+-------------------------------------------+
+   |                        | drivers - determinism.txt 3. Not merely a |
+   +------------------------+-------------------------------------------+
+   |                        | pacing setting.                           |
+   +------------------------+-------------------------------------------+
+   | savestate load         | silently replaces the machine state under |
+   +------------------------+-------------------------------------------+
+   |                        | one peer                                  |
+   +------------------------+-------------------------------------------+
+   | throttle, -speed,      | pacing only, but a peer running           |
+   +------------------------+-------------------------------------------+
+   | IPT_UI_FAST_FORWARD    | unthrottled starves the others of         |
+   +------------------------+-------------------------------------------+
+   |                        | wall-clock budget. Measured: -nothrottle  |
+   +------------------------+-------------------------------------------+
+   |                        | desyncs a session outright, because the   |
+   +------------------------+-------------------------------------------+
+   |                        | delay budget is wall-clock (protocol.txt  |
+   +------------------------+-------------------------------------------+
+   |                        | 1.6.3) and 1600 per cent speed collapses  |
+   +------------------------+-------------------------------------------+
+   |                        | it.                                       |
+   +------------------------+-------------------------------------------+
+   | the startup screens    | 5.1                                       |
+   +------------------------+-------------------------------------------+
+   | DIP and config changes | the Tab menu reaches them, and they are   |
+   +------------------------+-------------------------------------------+
+   |                        | handshake state (protocol.txt 4.2). A     |
+   +------------------------+-------------------------------------------+
+   |                        | mid-session change desyncs immediately.   |
+   +------------------------+-------------------------------------------+
+   |                        | See 6.1 - the menu needs blocking by      |
+   +------------------------+-------------------------------------------+
+   |                        | ITEM, not wholesale.                      |
+   +------------------------+-------------------------------------------+
 
    UI INPUT ITSELF DOES NOT NEED BLOCKING. IPT_UI_* types are in
    IPG_UI, are not part of any port's digital state, and are read
@@ -427,6 +457,26 @@ Table of Contents
    peer's own digital input. Harmless once the port is overwritten from
    the network, but it means the menu eats local input rather than
    overlaying it. [verified]
+
+6.1.  Key remapping stays, and costs nothing
+
+   THE TAB MENU IS NOT ALL ONE THING. Remapping inputs through it is
+   safe and worth keeping - a player who has to rebind a control at the
+   start of a match should be able to. Changing DIP switches or machine
+   configuration through the same menu is not safe, so the menu has to
+   be gated per item rather than closed outright.
+
+   Remapping is free because of WHERE capture happens. A peer captures
+   the FIELD state after ioport_field::frame_update has resolved the
+   key sequence, so which physical key is bound to a field is already
+   gone by the time anything is sent. Two peers can run entirely
+   different keyboard layouts and the wire traffic is identical.
+   [verified - remapped player 1 buttons mid-session on one peer and the
+   other peer saw the change applied correctly]
+
+   This is the same property that makes the local player always drive
+   LOCAL_SLOT's fields regardless of session slot (protocol.txt 1.1):
+   the protocol deals in logical inputs, never in keys.
 
 7.  Files we expect to touch
 

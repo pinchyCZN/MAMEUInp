@@ -143,6 +143,14 @@ private:
 	u64                         m_starved;
 	u64                         m_malformed;
 
+	// Set once a remote player's INPUT has actually been filed. Not the
+	// transport's receive count: that includes the handshake reply, and
+	// counting it cancels the initial alignment budget the moment the
+	// server answers - seconds before the other peer has even launched.
+	bool                        m_got_remote;
+	unsigned                    m_stall_limit;
+	unsigned                    m_join_limit;
+
 	bool                        m_selftest;
 	u64                         m_selftest_fail;
 	FILE *                      m_log;

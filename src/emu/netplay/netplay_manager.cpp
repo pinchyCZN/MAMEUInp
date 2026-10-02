@@ -88,6 +88,9 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_stall_frames(0)
 	, m_starved(0)
 	, m_malformed(0)
+	, m_got_remote(false)
+	, m_stall_limit(STALL_LIMIT)
+	, m_join_limit(JOIN_STALL_LIMIT)
 	, m_selftest(selftest)
 	, m_selftest_fail(0)
 	, m_log(nullptr)
@@ -258,7 +261,7 @@ void manager::open_session(running_machine &machine)
 			return;
 
 		net->identify(machine.system().name, probe.digest(),
-				savestate_layout_hash(machine), players);
+				savestate_layout_hash(machine), local, players);
 
 		link = std::move(net);
 	}
@@ -272,9 +275,17 @@ void manager::open_session(running_machine &machine)
 				env_uint("NETPLAY_SIM_SEED", 1)));
 	}
 
+	// Overridable so a test can make starvation impossible and ask whether
+	// lockstep holds when nothing is ever missing. [open] not a user option
+	const unsigned sl = env_uint("NETPLAY_STALL_LIMIT", STALL_LIMIT);
+
 	std::unique_ptr<manager> candidate(new manager(machine, local, players,
 			delay, batch, env_flag("NETPLAY_REDUNDANCY"),
 			env_flag("NETPLAY_SELFTEST")));
+
+	candidate->m_stall_limit = (sl > 0) ? sl : STALL_LIMIT;
+	if (sl > JOIN_STALL_LIMIT)
+		candidate->m_join_limit = sl;
 
 	if (!candidate->setup(std::getenv("NETPLAY_LOG"), std::move(link)))
 		return;
@@ -436,6 +447,8 @@ void manager::poll_link()
 			{
 				if ((head.player_mask & slot_bit(p)) == 0)
 					continue;
+				if (p != m_local)
+					m_got_remote = true;
 				publish(head.base_frame + frame_t(f), p, words[idx++]);
 			}
 		}
@@ -450,7 +463,14 @@ void manager::poll_link()
 void manager::wait_for_input()
 {
 	poll_link();
-	if (complete(m_frame))
+
+	// Nothing may run before the server releases the session. A word
+	// published while a peer has not joined is relayed to nobody and is
+	// gone for good, which costs exactly m_delay frames of input and
+	// desyncs both peers permanently. notes/protocol.txt 4.1
+	const bool gated = (m_link && !m_link->ready());
+
+	if (!gated && complete(m_frame))
 		return;
 
 	// This is the stutter. Every frame counted here is a frame the player
@@ -462,19 +482,48 @@ void manager::wait_for_input()
 	// still launching, so the first wait is seconds rather than milliseconds.
 	// One limit cannot serve both, so the budget is generous until the first
 	// remote packet has ever arrived and tight afterwards.
-	const unsigned limit = (m_link && (m_link->recv_count() == 0))
-			? JOIN_STALL_LIMIT : STALL_LIMIT;
+	const unsigned limit = m_got_remote ? m_stall_limit : m_join_limit;
+
+	// PAUSE AROUND THE WAIT, and the reason is determinism, not tidiness.
+	//
+	// A held frame still has to service the window: the window lives on its
+	// own thread and reaches the main thread by SendMessage, so a main thread
+	// asleep in a loop stops the display responding. video_manager::
+	// frame_update is how MAME pumps it, and the debugger uses exactly this
+	// to stay alive while the emulation is stopped.
+	//
+	// LANDMINE: from_debugger=true does NOT make that call side-effect free.
+	// finish_screen_updates() runs whenever the machine is RUNNING and not
+	// paused, and it writes screen partial-update state that IS part of the
+	// save set. Measured on two peers: pumping unpaused left
+	// Video Screen/:screen/0/m_last_partial_scan and
+	// timer/:screen/2/0/m_start.attoseconds different between them - 2 of 931
+	// entries - purely because one peer stalled more often than the other.
+	// Pausing first is what makes the pump safe, because the paused check is
+	// what skips the screen work.
+	const bool was_paused = m_machine.paused();
+	if (!was_paused)
+		m_machine.pause();
 
 	unsigned spins = 0;
-	while (!complete(m_frame))
+	while ((m_link && !m_link->ready()) || !complete(m_frame))
 	{
 		if (!m_link || !m_link->wait())
 			break;
+
+		// ~60 Hz, not on every poll: wait() returns about every millisecond,
+		// and pumping that often renders a thousand frames a second.
+		if ((spins % 16) == 0)
+			m_machine.video().frame_update(true);
+
 		poll_link();
 		m_stall_frames++;
 		if (++spins >= limit)
 			break;
 	}
+
+	if (!was_paused)
+		m_machine.resume();
 
 	if (!complete(m_frame))
 	{

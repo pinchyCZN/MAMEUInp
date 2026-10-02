@@ -207,6 +207,7 @@ udp_link::udp_link()
 	, m_players(0)
 	, m_session(0)
 	, m_welcomed(false)
+	, m_started(false)
 	, m_refused(false)
 	, m_ticks(0)
 	, m_join_len(0)
@@ -356,8 +357,11 @@ bool udp_link::recv_raw(u8 *buf, size_t cap, size_t &got)
 //-------------------------------------------------
 
 void udp_link::identify(const char *driver, u64 inputmap_digest,
-		u64 layout_digest, player_t want_players)
+		u64 layout_digest, player_t slot, player_t want_players)
 {
+	m_slot = slot;
+	m_players = want_players;
+
 	join_payload jp;
 	jp.inputmap = inputmap_digest;
 	jp.layout = layout_digest;
@@ -469,7 +473,14 @@ size_t udp_link::recv(u8 *buf, size_t cap)
 		}
 
 		if (head.type == MSG_START)
-			continue;       // alignment is the stall's job, not a message's
+		{
+			if (!m_started)
+			{
+				m_started = true;
+				osd_printf_info("netplay: session starting\n");
+			}
+			continue;
+		}
 
 		return got;
 	}

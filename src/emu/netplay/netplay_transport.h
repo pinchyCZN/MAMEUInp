@@ -64,6 +64,12 @@ public:
 	// Returns false when waiting cannot help, which ends the stall.
 	virtual bool wait() = 0;
 
+	// May the session run? A peer must not emit input before every other
+	// peer can receive it: the server has nobody to relay to yet, so those
+	// frames are lost and can never be recovered. notes/protocol.txt 4.1
+	// Only a transport with a handshake has anything to say here.
+	virtual bool ready() const { return true; }
+
 	virtual const char *name() const = 0;
 
 	// diagnostics; the sizing work in protocol.txt 1.6.3 is these numbers
@@ -130,22 +136,22 @@ public:
 	// which fails the session rather than running without a peer.
 	bool open(const char *host, unsigned port);
 
-	// NEVER BLOCKS, and that is a hard constraint rather than a
-	// preference. Blocking MAME's main thread inside frame_update wedges
-	// window creation: the window runs on its own thread and reaches the
-	// main thread by SendMessage, so a main thread asleep in a socket call
-	// leaves a half-initialised display device behind. Measured: one peer
-	// blocking for 300 ms was enough to make a SECOND instance on the same
-	// machine fail video init outright.
+	// NEVER BLOCKS. MAME's main thread drives the window, which lives on
+	// its own thread and reaches the main thread by SendMessage, so a main
+	// thread asleep in a socket call stops the display servicing itself for
+	// as long as the sleep lasts. Holding a frame is the lockstep stall's
+	// job and it keeps the display alive while it waits; a handshake has no
+	// business blocking at all.
 	//
 	// So the slot and player count come from configuration, JOIN is
 	// announced in the background, and WELCOME or REFUSE is handled
-	// whenever it turns up. Frame 0 alignment is the lockstep stall's job,
-	// which is what it already does for every other frame.
+	// whenever it turns up. Frame 0 alignment is the stall's job, which is
+	// what it already does for every other frame.
 	void identify(const char *driver, u64 inputmap_digest, u64 layout_digest,
-			player_t want_players);
+			player_t slot, player_t want_players);
 
 	bool welcomed() const { return m_welcomed; }
+	bool ready() const override { return m_started; }
 	bool refused() const { return m_refused; }
 	player_t slot() const { return m_slot; }
 	player_t players() const { return m_players; }
@@ -171,6 +177,7 @@ private:
 	player_t    m_players;
 	u16         m_session;
 	bool        m_welcomed;
+	bool        m_started;
 	bool        m_refused;
 	u64         m_ticks;
 	u8          m_join[MAX_DATAGRAM];

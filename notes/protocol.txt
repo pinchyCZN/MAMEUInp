@@ -1061,6 +1061,19 @@ Table of Contents
      second, and determinism.txt 6 shows a single sampled frame can
      miss a divergence that the next frame shows.
    o Input delay: fixed at join, negotiated, or adaptive.
+   o Cheat propagation. A host enabling a cheat has to enable it on
+     every peer, since a cheat writes emulated memory and one peer
+     doing it alone desyncs at once. The cheat plugin is Lua and acts
+     through the debugger interface, so this is a control message
+     carrying an enable/disable for a named cheat rather than anything
+     on the input path. Wanted, and after basic play is dialled in.
+   o Blocking the Tab menu per item rather than wholesale, so remapping
+     stays available while DIP and configuration changes do not. See
+     netplay-hooks.txt 6.1.
+   o The ROM-warning startup screen. -skip_gameinfo covers the machine
+     information screen but not the warning one, which ui.cpp suppresses
+     only for -seconds_to_run 1..299. A session cannot have one peer
+     waiting on a dialog, so this needs an option of its own.
    o What K should be in 2.3, and whether it scales with session
      length.
    o Late join and spectators. A late joiner is a resync with M equal
