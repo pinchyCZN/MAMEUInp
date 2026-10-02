@@ -10,6 +10,8 @@
 
 #include "emu.h"
 #include "netplay/netplay_manager.h"
+#include <ctime>
+#include "uiinput.h"   // NETPLAY: ui_input_manager is incomplete via emu.h
 #include "netplay/netplay_hash.h"
 #include "netplay/netplay_transport.h"
 
@@ -99,6 +101,8 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_test_held(0)
 	, m_held_polls(0)
 	, m_waits(0)
+	, m_status_path()
+	, m_status_due(0)
 	, m_selftest(selftest)
 	, m_selftest_fail(0)
 	, m_log(nullptr)
@@ -293,8 +297,18 @@ void manager::open_session(running_machine &machine)
 			env_flag("NETPLAY_SELFTEST")));
 
 	candidate->m_stall_limit = (sl > 0) ? sl : STALL_LIMIT;
+	const char *const status = std::getenv("NETPLAY_STATUS");
+	if (!unset(status))
+		candidate->m_status_path = status;
 	candidate->m_test_pause_at = frame_t(env_uint("NETPLAY_TEST_PAUSE_AT", 0));
-	candidate->m_test_pause_hold = env_uint("NETPLAY_TEST_PAUSE_HOLD", 120);
+	// DEFAULT 0, NOT A NUMBER. A non-zero default made every netplay pause
+	// in a real session resume itself after a couple of seconds, because
+	// the hold honours this whenever it is set. Observed as a pause that
+	// 'unpaused itself'. The diagnostic only exists alongside
+	// NETPLAY_TEST_PAUSE_AT, so it is ignored unless that is set too.
+	candidate->m_test_pause_hold = (candidate->m_test_pause_at != 0)
+			? env_uint("NETPLAY_TEST_PAUSE_HOLD", 120)
+			: 0;
 	if (sl > JOIN_STALL_LIMIT)
 		candidate->m_join_limit = sl;
 
@@ -599,6 +613,12 @@ void manager::send_uicmd(u8 cmd)
 }
 
 
+bool manager::session_active(running_machine &machine)
+{
+	return (active() != nullptr) && (s_owner == &machine);
+}
+
+
 bool manager::ui_request(running_machine &machine, u8 cmd)
 {
 	manager *const m = active();
@@ -655,9 +675,16 @@ void manager::wait_for_input()
 	// timer/:screen/2/0/m_start.attoseconds different between them - 2 of
 	// 931 entries - purely because one peer stalled more often than the
 	// other. Pausing first is what makes the pump safe.
-	const bool was_paused = m_machine.paused();
-	if (!was_paused)
-		m_machine.pause();
+	// PAUSE LAZILY. Pausing dims the screen and puts [paused] in the FPS
+	// overlay (video.cpp), so pausing for every few-millisecond jitter
+	// stall makes the picture flicker - badly, if the peer is unthrottled
+	// and therefore stalls every single frame. Observed on a peer with F10
+	// pressed. Below PUMP_AFTER we just sleep and poll: nothing needs the
+	// window serviced for 100 ms, and nothing needs dimming either.
+	//
+	// A deliberate netplay pause is the exception and dims at once, because
+	// there the dimming is the feedback that tells the player it worked.
+	bool we_paused = false;
 
 	u64 since_keepalive = 0;
 
@@ -673,10 +700,33 @@ void manager::wait_for_input()
 		if (!m_link || !m_link->wait())
 			break;
 
+		const bool want_pause = m_net_paused || (m_held_polls >= PUMP_AFTER);
+		if (want_pause && !we_paused && !m_machine.paused())
+		{
+			m_machine.pause();
+			we_paused = true;
+		}
+
 		// ~60 Hz, not on every poll: wait() returns about every millisecond,
 		// and pumping that often renders a thousand frames a second.
-		if ((m_held_polls % 16) == 0)
+		if (want_pause && ((m_held_polls % 16) == 0))
+		{
 			m_machine.video().frame_update(true);
+
+			// LATCH THE UI KEYS BY HAND. ui_input_manager::frame_update is
+			// registered on MACHINE_NOTIFY_FRAME, and
+			// video_manager::frame_update only fires those notifiers when
+			// from_debugger is false. So the pump above draws the UI but
+			// never updates which UI keys are down, and pressed() stays false
+			// forever: the player can neither resume nor quit, which wedges
+			// the session beyond Task Manager. Observed.
+			//
+			// Called directly rather than switching to from_debugger=false,
+			// because that would also re-enable throttle and frameskip
+			// updates, and frameskip perturbs emulated state
+			// (notes/determinism.txt 3).
+			m_machine.ui_input().frame_update();
+		}
 
 		poll_link();
 		apply_ui_command();
@@ -689,6 +739,7 @@ void manager::wait_for_input()
 		{
 			since_keepalive = 0;
 			resend_last();
+			write_status();        // a held session must keep reporting
 		}
 
 		// NEVER SYNTHESIZE INPUT. Substituting a neutral word for a player
@@ -708,7 +759,7 @@ void manager::wait_for_input()
 			test_pause_tick();
 	}
 
-	if (!was_paused)
+	if (we_paused)
 		m_machine.resume();
 
 	if (!m_net_paused && complete(m_frame))
@@ -872,8 +923,87 @@ void manager::frame_end(running_machine &machine)
 	m->m_pending = 0;
 	m->m_echo = 0;
 	m->m_frame++;
+
+	// ~2 Hz while running. Often enough to watch, cheap enough to ignore.
+	if ((m->m_frame % 30) == 0)
+		m->write_status();
 }
 
+
+//-------------------------------------------------
+//  write_status - a readout for a session nobody
+//  can interrogate any other way
+//-------------------------------------------------
+
+void manager::write_status()
+{
+	if (m_status_path.empty())
+		return;
+
+	// Rewritten whole each time rather than appended, so the file is a
+	// snapshot and not a log to seek through. A reader can catch a partial
+	// write, which is why the last line is a marker: no "# end", no trust.
+	FILE *const f = std::fopen(m_status_path.c_str(), "w");
+	if (f == nullptr)
+		return;
+
+	const slot &sl = at(m_frame);
+	const bool stamped = (sl.stamp == m_frame);
+
+	std::fprintf(f, "# netplay status\n");
+	std::fprintf(f, "time=%lld\n", static_cast<long long>(time(nullptr)));
+	std::fprintf(f, "driver=%s\n", m_machine.system().name);
+	std::fprintf(f, "inputmap=%016llx\n",
+			static_cast<unsigned long long>(m_map.digest()));
+	std::fprintf(f, "transport=%s\n", m_link ? m_link->name() : "none");
+	std::fprintf(f, "slot=%d\n", int(m_local));
+	std::fprintf(f, "players=%d\n", int(m_players));
+	std::fprintf(f, "delay=%d\n", int(m_delay));
+	std::fprintf(f, "batch=%d\n", int(m_batch));
+	std::fprintf(f, "budget=%d\n", int(m_delay) - int(m_batch) + 1);
+
+	std::fprintf(f, "frame=%u\n", unsigned(m_frame));
+	std::fprintf(f, "net_paused=%d\n", m_net_paused ? 1 : 0);
+	std::fprintf(f, "gated=%d\n", gated_now() ? 1 : 0);
+	std::fprintf(f, "frame_complete=%d\n", complete(m_frame) ? 1 : 0);
+	std::fprintf(f, "have=%02x\n", stamped ? sl.have : 0);
+	std::fprintf(f, "need=%02x\n", m_need);
+	std::fprintf(f, "missing=%s\n", complete(m_frame) ? "" : missing_text());
+
+	std::fprintf(f, "held_polls=%llu\n",
+			static_cast<unsigned long long>(m_held_polls));
+	std::fprintf(f, "stalls=%llu\n", static_cast<unsigned long long>(m_stalls));
+	std::fprintf(f, "stall_frames=%llu\n",
+			static_cast<unsigned long long>(m_stall_frames));
+	std::fprintf(f, "waits=%llu\n", static_cast<unsigned long long>(m_waits));
+	std::fprintf(f, "malformed=%llu\n",
+			static_cast<unsigned long long>(m_malformed));
+
+	std::fprintf(f, "link_sent=%llu\n",
+			static_cast<unsigned long long>(m_link ? m_link->sent_count() : 0));
+	std::fprintf(f, "link_recv=%llu\n",
+			static_cast<unsigned long long>(m_link ? m_link->recv_count() : 0));
+	std::fprintf(f, "link_dropped=%llu\n",
+			static_cast<unsigned long long>(m_link ? m_link->drop_count() : 0));
+
+	std::fprintf(f, "cmd_pending=%d\n", m_cmd_pending ? 1 : 0);
+	std::fprintf(f, "cmd=%s\n", m_cmd_pending ? uicmd_text(m_cmd) : "");
+	std::fprintf(f, "cmd_frame=%u\n", unsigned(m_cmd_frame));
+
+	// The ring from here forward: C where every player's word has arrived,
+	// dot where it has not. Where the Cs stop is where the session is stuck,
+	// and that is the one thing a wedged peer cannot otherwise tell you.
+	std::fprintf(f, "ring=");
+	for (unsigned i = 0; i < 48; i++)
+	{
+		const frame_t fr = m_frame + frame_t(i);
+		std::fputc(complete(fr) ? 0x43 : 0x2e, f);
+	}
+	std::fprintf(f, "\n");
+
+	std::fprintf(f, "# end\n");
+	std::fclose(f);
+}
 
 //-------------------------------------------------
 //  on_exit

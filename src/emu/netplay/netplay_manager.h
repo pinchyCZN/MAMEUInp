@@ -39,6 +39,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <string>
 
 
 namespace netplay {
@@ -63,6 +64,11 @@ public:
 	// frame. Returns false with no session, so MAME behaves normally.
 	static bool ui_request(running_machine &machine, u8 cmd);
 
+	// True while a session is running. The UI uses it to refuse the keys
+	// that cannot be made safe by stamping them with a frame - see
+	// notes/netplay-hooks.txt 6.
+	static bool session_active(running_machine &machine);
+
 	// public only because std::unique_ptr holds one; construction stays
 	// private so a session can only come from open_session()
 	~manager();
@@ -84,6 +90,11 @@ private:
 	// input, which is a desync and what resync exists for, so it is counted
 	// rather than hidden. [open]
 	static constexpr unsigned STALL_LIMIT = 240;
+
+	// Hold this long, in poll iterations of about a millisecond, before
+	// pausing and pumping the display. Short stalls are ordinary jitter and
+	// pausing for them flickers the screen.
+	static constexpr unsigned PUMP_AFTER = 100;
 
 	// Waiting for the other peer's process to finish launching is a wait
 	// of seconds, not milliseconds, and it happens exactly once. udp_link
@@ -121,6 +132,7 @@ private:
 	void send_uicmd(u8 cmd);
 	void check_selftest();
 	void on_exit();
+	void write_status();
 
 	running_machine &           m_machine;
 	inputmap                    m_map;
@@ -188,6 +200,13 @@ private:
 	u64                         m_held_polls;
 	u64                         m_waits;
 	char                        m_missing[96];
+
+	// Where to dump the status readout, and how long since the last one.
+	// A wedged session cannot be asked what it is doing, and every bug so
+	// far has been an ordering question rather than a wrong value, so the
+	// useful thing to externalise is state, not memory.
+	std::string                 m_status_path;
+	u64                         m_status_due;
 
 	bool                        m_selftest;
 	u64                         m_selftest_fail;

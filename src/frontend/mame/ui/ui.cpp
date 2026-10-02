@@ -1243,17 +1243,43 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 	if (machine().ui_input().pressed(IPT_UI_SHOW_FPS))
 		set_show_fps(!show_fps());
 
+	// NETPLAY: F8/F9/F10 and fast forward are refused during a session.
+	// Frameskip is a real desync - it perturbs emulated state on several
+	// drivers (notes/determinism.txt 3). Throttle and fast forward are not,
+	// now that a missing word is waited for rather than invented, but an
+	// unthrottled peer outruns its input every single frame and spends the
+	// session in the lockstep hold. All four are single keys sitting next to
+	// the game keys, which is the test notes/netplay-hooks.txt 6.1 applies.
+	// Unlike pause and reset there is nothing to gain by stamping them with
+	// a frame, so they are simply declined.
+	const bool netlocked = netplay::manager::session_active(machine());
+
 	// increment frameskip?
 	if (machine().ui_input().pressed(IPT_UI_FRAMESKIP_INC))
-		increase_frameskip();
+	{
+		if (netlocked)
+			machine().popmessage(_("Frameskip is locked during netplay"));
+		else
+			increase_frameskip();
+	}
 
 	// decrement frameskip?
 	if (machine().ui_input().pressed(IPT_UI_FRAMESKIP_DEC))
-		decrease_frameskip();
+	{
+		if (netlocked)
+			machine().popmessage(_("Frameskip is locked during netplay"));
+		else
+			decrease_frameskip();
+	}
 
 	// toggle throttle?
 	if (machine().ui_input().pressed(IPT_UI_THROTTLE))
-		machine().video().toggle_throttle();
+	{
+		if (netlocked)
+			machine().popmessage(_("Throttle is locked during netplay"));
+		else
+			machine().video().toggle_throttle();
+	}
 
 	// toggle autofire
 	if (machine().ui_input().pressed(IPT_UI_TOGGLE_AUTOFIRE))
@@ -1271,7 +1297,7 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 	}
 
 	// check for fast forward
-	if (machine().ioport().type_pressed(IPT_UI_FAST_FORWARD))
+	if (!netlocked && machine().ioport().type_pressed(IPT_UI_FAST_FORWARD))
 	{
 		machine().video().set_fastforward(true);
 		show_fps_temp(0.5);
