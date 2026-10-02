@@ -37,7 +37,7 @@ Table of Contents
       5.1. Two startup screens, one option
       5.2. NVRAM that needs a boot to initialise
    6. What netplay has to disable
-      6.1. Key remapping stays, and costs nothing
+      6.1. The menu stays open; the accidental keys do not
    7. Files we expect to touch
    8. Open questions
 
@@ -434,15 +434,9 @@ Table of Contents
    +------------------------+-------------------------------------------+
    | the startup screens    | 5.1                                       |
    +------------------------+-------------------------------------------+
-   | DIP and config changes | the Tab menu reaches them, and they are   |
+   | DIP and config changes | a desync path, DELIBERATELY NOT GATED -   |
    +------------------------+-------------------------------------------+
-   |                        | handshake state (protocol.txt 4.2). A     |
-   +------------------------+-------------------------------------------+
-   |                        | mid-session change desyncs immediately.   |
-   +------------------------+-------------------------------------------+
-   |                        | See 6.1 - the menu needs blocking by      |
-   +------------------------+-------------------------------------------+
-   |                        | ITEM, not wholesale.                      |
+   |                        | see 6.1                                   |
    +------------------------+-------------------------------------------+
 
    UI INPUT ITSELF DOES NOT NEED BLOCKING. IPT_UI_* types are in
@@ -458,13 +452,25 @@ Table of Contents
    the network, but it means the menu eats local input rather than
    overlaying it. [verified]
 
-6.1.  Key remapping stays, and costs nothing
+6.1.  The menu stays open; the accidental keys do not
 
-   THE TAB MENU IS NOT ALL ONE THING. Remapping inputs through it is
-   safe and worth keeping - a player who has to rebind a control at the
-   start of a match should be able to. Changing DIP switches or machine
-   configuration through the same menu is not safe, so the menu has to
-   be gated per item rather than closed outright.
+   WHAT GETS GATED IS DECIDED BY HOW EASY IT IS TO HIT BY ACCIDENT, not
+   by whether it can desync.
+
+   Pause and fast-forward are single keys next to ordinary game keys,
+   and pressing one mid-match is a thing that happens - old Kaillera
+   gated them for exactly that reason. Mandatory.
+
+   The Tab menu reaches DIP switches and machine configuration, which
+   desync just as surely, and it is NOT gated. Reaching them takes
+   deliberate navigation, gating individual menu items is involved, and
+   this is not built for strangers: a player who opens the menu and
+   changes a DIP has broken their own session knowingly. Revisit if that
+   stops being true.
+
+   Remapping inputs through that menu is not merely tolerated, it is
+   wanted - a control that has to be rebound at the start of a match
+   should be reboundable.
 
    Remapping is free because of WHERE capture happens. A peer captures
    the FIELD state after ioport_field::frame_update has resolved the

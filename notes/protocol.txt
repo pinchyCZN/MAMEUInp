@@ -306,11 +306,24 @@ Table of Contents
    word already being sent, needs no extra field and no second message
    type, and leaving it out would save zero bytes.
 
-   EVERY ANALOG FIELD MEASURED IS 8 BITS WIDE. 33 of 35 are 0xff; the
-   other two are tempest's 4-bit knobs. Nothing is wider, across
-   trackballs, pedals, steering, light guns and AD sticks - marble,
-   offroad, daytona, polepos, vr, starwars, sharrier, spyhunt, term2,
-   lethalen, tempest. [verified]
+   ANALOG IS USUALLY 8 BITS AND IS NOT ALWAYS. Across 26 drivers 33 of
+   35 analog fields are 0xff and the other two are tempest's 4-bit knobs
+   - trackballs, pedals, steering, light guns and AD sticks all came in
+   at 8. [verified] Then bublbob2o turned up with two 12-bit dials,
+   mask 0x0fff on :DIAL.0 and :DIAL.1. [verified]
+
+   So the four 8-bit axis slots below do NOT cover every driver, and the
+   sample that said they did was 26 drivers wide. A 12-bit axis has to
+   either lose its low bits or refuse the session (4.4 REFUSE_TOOWIDE);
+   losing bits silently is the wrong answer for a format whose whole job
+   is that two peers compute the same thing. [open] Analog is not
+   carried at all yet, so nothing is wrong today - the design note is.
+
+   Worth knowing that bublbob2o's dials are not gameplay controls and
+   read the same default on both peers, so a two-peer session on it held
+   1181 frames with zero divergence despite them being unsynchronised.
+   An unsynchronised analog input is a desync waiting for a driver that
+   actually reads one. [verified]
 
    That is the GAME-VISIBLE width, which is the one that matters: the
    mask decides how many bits reach the driver through

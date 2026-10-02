@@ -15,6 +15,7 @@
 #include <process.h>
 
 #include <atomic>
+#include <cstdlib>   // NETPLAY: getenv for NETPLAY_TAG
 #include <cstring>
 #include <chrono>
 #include <list>
@@ -775,6 +776,21 @@ void win_window_info::create(running_machine &machine, int index, std::shared_pt
 		sprintf(window->m_title, "%s: %s [%s]", emulator_info::get_appname(), machine.system().type.fullname(), machine.system().name);
 	else
 		sprintf(window->m_title, "%s: %s [%s] - Screen %d", emulator_info::get_appname(), machine.system().type.fullname(), machine.system().name, index);
+
+	// NETPLAY: append NETPLAY_TAG to the title, so two instances sharing a
+	// desktop can be told apart. Environment rather than an emu_option
+	// because emuopts.h reaches 179 translation units and this one does not
+	// justify that. m_title is char[256]; the tag is clipped to fit.
+	{
+		char const *const nptag = std::getenv("NETPLAY_TAG");
+		if ((nptag != nullptr) && (nptag[0] != 0))
+		{
+			size_t const used = strlen(window->m_title);
+			size_t const room = sizeof(window->m_title) - used - 1;
+			if (room > 4)
+				snprintf(window->m_title + used, room, "  <%.*s>", int(room - 4), nptag);
+		}
+	}
 
 	// set the initial maximized state
 	window->m_startmaximized = options.maximize();
