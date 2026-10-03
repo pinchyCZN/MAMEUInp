@@ -1158,13 +1158,27 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 			machine().schedule_soft_reset();
 
 	// handle a request to display graphics/palette
+	// NETPLAY: the graphics viewer pauses the machine and then keeps it
+	// paused for as long as someone is browsing tiles, which leaves every
+	// other peer stalled waiting for input that is not coming. The session
+	// survives it now that a paused peer still sends keepalives, but one
+	// player can still freeze everyone else indefinitely, and F4 is a
+	// single key next to the game keys - the test netplay-hooks.txt 6.1
+	// applies.
 	if (machine().ui_input().pressed(IPT_UI_SHOW_GFX))
 	{
-		if (!is_paused)
-			machine().pause();
-		using namespace std::placeholders;
-		set_handler(ui_callback_type::VIEWER, std::bind(&ui_gfx_ui_handler, _1, std::ref(*this), is_paused));
-		return is_paused ? 1 : 0;
+		if (netplay::manager::session_active(machine()))
+		{
+			machine().popmessage(_("The graphics viewer is locked during netplay"));
+		}
+		else
+		{
+			if (!is_paused)
+				machine().pause();
+			using namespace std::placeholders;
+			set_handler(ui_callback_type::VIEWER, std::bind(&ui_gfx_ui_handler, _1, std::ref(*this), is_paused));
+			return is_paused ? 1 : 0;
+		}
 	}
 
 	// handle a tape control key
@@ -1185,18 +1199,41 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 		}
 	}
 
+	// NETPLAY: savestates belong to the host. A load replaces machine
+	// state under one peer, and the intended use is the host saving,
+	// rehosting later, and guests resyncing to it - so a guest has no
+	// business doing either. Both also open a MENU, which stops that peer
+	// producing frames: harmless for one peer, but two peers in menus at
+	// once used to leave nobody talking at all.
+	const bool netplay_guest = netplay::manager::session_active(machine())
+			&& !netplay::manager::is_host(machine());
+
 	// handle a save state request
 	if (machine().ui_input().pressed(IPT_UI_SAVE_STATE))
 	{
-		start_save_state();
-		return LOADSAVE_SAVE;
+		if (netplay_guest)
+		{
+			machine().popmessage(_("Only the host can save state during netplay"));
+		}
+		else
+		{
+			start_save_state();
+			return LOADSAVE_SAVE;
+		}
 	}
 
 	// handle a load state request
 	if (machine().ui_input().pressed(IPT_UI_LOAD_STATE))
 	{
-		start_load_state();
-		return LOADSAVE_LOAD;
+		if (netplay_guest)
+		{
+			machine().popmessage(_("Only the host can load state during netplay"));
+		}
+		else
+		{
+			start_load_state();
+			return LOADSAVE_LOAD;
+		}
 	}
 
 	// handle a save snapshot request

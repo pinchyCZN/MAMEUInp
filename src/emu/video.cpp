@@ -9,6 +9,7 @@
 ***************************************************************************/
 
 #include "emu.h"
+#include "netplay/netplay_manager.h"   // NETPLAY
 #include "emuopts.h"
 #include "debugger.h"
 #include "ui/uimain.h"
@@ -250,6 +251,14 @@ void video_manager::frame_update(bool from_debugger)
 	g_profiler.start(PROFILER_BLIT);
 	machine().osd().update(!from_debugger && skipped_it);
 	g_profiler.stop();
+
+	// NETPLAY: the only per-frame point that still runs when the scheduler
+	// is stopped - running_machine::run() calls this instead of a timeslice
+	// while paused. A peer sitting in a MAME menu produces no frames, so
+	// every other netplay hook goes quiet and the session looks dead to the
+	// server. No-ops unless a session is running AND the machine is paused.
+	// See src/emu/netplay/netplay_manager.h.
+	netplay::manager::idle_update(machine());
 
 	emulator_info::periodic_check();
 

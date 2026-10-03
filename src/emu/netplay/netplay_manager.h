@@ -69,6 +69,19 @@ public:
 	// notes/netplay-hooks.txt 6.
 	static bool session_active(running_machine &machine);
 
+	// Slot 1 is the host. Savestate load and save are the host's alone:
+	// a load replaces machine state under one peer, and the plan is for the
+	// host to save, rehost later and have guests resync to it.
+	static bool is_host(running_machine &machine);
+
+	// Called once per presentation frame from video_manager::frame_update,
+	// which unlike the ioport hooks still runs while the machine is PAUSED.
+	// A peer sitting in a MAME menu produces no frames, so none of the
+	// other hooks run and it stops talking entirely - and a server that
+	// tracks liveness then drops it. Observed: both peers opening the
+	// savestate prompt killed the session.
+	static void idle_update(running_machine &machine);
+
 	// public only because std::unique_ptr holds one; construction stays
 	// private so a session can only come from open_session()
 	~manager();
@@ -207,6 +220,7 @@ private:
 	// useful thing to externalise is state, not memory.
 	std::string                 m_status_path;
 	u64                         m_status_due;
+	u64                         m_idle_ticks;
 
 	bool                        m_selftest;
 	u64                         m_selftest_fail;

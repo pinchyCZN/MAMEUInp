@@ -103,6 +103,7 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_waits(0)
 	, m_status_path()
 	, m_status_due(0)
+	, m_idle_ticks(0)
 	, m_selftest(selftest)
 	, m_selftest_fail(0)
 	, m_log(nullptr)
@@ -616,6 +617,39 @@ void manager::send_uicmd(u8 cmd)
 bool manager::session_active(running_machine &machine)
 {
 	return (active() != nullptr) && (s_owner == &machine);
+}
+
+
+bool manager::is_host(running_machine &machine)
+{
+	manager *const m = active();
+	return (m != nullptr) && (s_owner == &machine) && (m->m_local == 1);
+}
+
+
+void manager::idle_update(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return;
+
+	// Only while the scheduler is stopped. When it is running the ioport
+	// hooks already poll every frame, and doing it twice would just be
+	// noise.
+	if (!machine.paused())
+		return;
+
+	m->poll_link();
+
+	// About twice a second. Deliberately NOT a new message type: repeating
+	// the last input batch is idempotent on the receiver and doubles as
+	// loss repair, which is the same reason the hold uses it.
+	m->m_idle_ticks++;
+	if ((m->m_idle_ticks % 30) == 0)
+	{
+		m->resend_last();
+		m->write_status();
+	}
 }
 
 

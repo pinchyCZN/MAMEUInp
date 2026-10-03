@@ -45,6 +45,15 @@ local B2    = find_field("P1 Button 2")
 local LEFT  = find_field("P1 Left")
 local RIGHT = find_field("P1 Right")
 
+-- Set NETPLAY_INPUTGEN_TILT=1 to mash Tilt as well. Tilt has no player,
+-- so netplay_inputmap puts it in the shared set and injection zeroes it:
+-- pressing it on ONE peer should therefore change nothing anywhere. This
+-- is how that gets checked rather than assumed.
+local TILT = nil
+if os.getenv("NETPLAY_INPUTGEN_TILT") then
+	TILT = find_field("Tilt")
+end
+
 local function press(field, down)
 	if field then field:set_value(down and 1 or 0) end
 end
@@ -64,6 +73,7 @@ emu.register_frame(function()
 		press(B2,    phase >= 16 and phase < 22)
 		press(LEFT,  phase >= 32 and phase < 44)
 		press(RIGHT, phase >= 48 and phase < 60)
+		press(TILT,  phase >= 8  and phase < 14)
 	end
 end)
 
@@ -73,3 +83,4 @@ print(string.format(
 	"inputgen: coin=%s start=%s b1=%s b2=%s left=%s right=%s",
 	tostring(COIN ~= nil), tostring(START ~= nil), tostring(B1 ~= nil),
 	tostring(B2 ~= nil), tostring(LEFT ~= nil), tostring(RIGHT ~= nil)))
+print("inputgen: tilt=" .. tostring(TILT ~= nil))
