@@ -627,6 +627,46 @@ bool manager::is_host(running_machine &machine)
 }
 
 
+const char *manager::ui_locked(running_machine &machine, u8 what)
+{
+	if (!session_active(machine))
+		return nullptr;
+
+	switch (what)
+	{
+	// Frameskip is the only one of these that is a genuine desync: it
+	// perturbs emulated state on several drivers (notes/determinism.txt 3).
+	case LOCK_FRAMESKIP:
+		return "Frameskip is locked during netplay";
+
+	// These two are safe now that a missing word is waited for rather than
+	// invented, but an unthrottled peer outruns its input every frame and
+	// spends the session in the lockstep hold.
+	case LOCK_THROTTLE:
+		return "Throttle is locked during netplay";
+	case LOCK_FASTFORWARD:
+		return "Fast forward is locked during netplay";
+
+	// Pauses the machine for as long as someone is browsing tiles, which
+	// leaves every other peer waiting on input that is not coming.
+	case LOCK_GFXVIEWER:
+		return "The graphics viewer is locked during netplay";
+
+	// The host's alone. A load replaces machine state under one peer, and
+	// the intended use is the host saving, rehosting, and guests resyncing.
+	case LOCK_SAVESTATE:
+		return is_host(machine)
+				? nullptr : "Only the host can save state during netplay";
+	case LOCK_LOADSTATE:
+		return is_host(machine)
+				? nullptr : "Only the host can load state during netplay";
+
+	default:
+		return nullptr;
+	}
+}
+
+
 void manager::idle_update(running_machine &machine)
 {
 	manager *const m = active();

@@ -1073,6 +1073,19 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 	bool has_keyboard = machine_info().has_keyboard();
 	bool ui_disabled = (has_keyboard && !machine().ui_active());
 
+	// NETPLAY: one gate for every UI action a session refuses. What is
+	// refused and why lives in netplay::manager::ui_locked, so the policy
+	// is in one place and this stays a single upstream block. Returns
+	// false for everything when no session is running.
+	auto const netplay_blocked = [this] (u8 what) -> bool
+	{
+		char const *const why = netplay::manager::ui_locked(machine(), what);
+		if (why == nullptr)
+			return false;
+		machine().popmessage("%s", why);
+		return true;
+	};
+
 	// is ScrLk UI toggling applicable here?
 	if (has_keyboard)
 	{
@@ -1158,27 +1171,14 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 			machine().schedule_soft_reset();
 
 	// handle a request to display graphics/palette
-	// NETPLAY: the graphics viewer pauses the machine and then keeps it
-	// paused for as long as someone is browsing tiles, which leaves every
-	// other peer stalled waiting for input that is not coming. The session
-	// survives it now that a paused peer still sends keepalives, but one
-	// player can still freeze everyone else indefinitely, and F4 is a
-	// single key next to the game keys - the test netplay-hooks.txt 6.1
-	// applies.
-	if (machine().ui_input().pressed(IPT_UI_SHOW_GFX))
+	if (machine().ui_input().pressed(IPT_UI_SHOW_GFX)
+			&& !netplay_blocked(netplay::manager::LOCK_GFXVIEWER))
 	{
-		if (netplay::manager::session_active(machine()))
-		{
-			machine().popmessage(_("The graphics viewer is locked during netplay"));
-		}
-		else
-		{
-			if (!is_paused)
-				machine().pause();
-			using namespace std::placeholders;
-			set_handler(ui_callback_type::VIEWER, std::bind(&ui_gfx_ui_handler, _1, std::ref(*this), is_paused));
-			return is_paused ? 1 : 0;
-		}
+		if (!is_paused)
+			machine().pause();
+		using namespace std::placeholders;
+		set_handler(ui_callback_type::VIEWER, std::bind(&ui_gfx_ui_handler, _1, std::ref(*this), is_paused));
+		return is_paused ? 1 : 0;
 	}
 
 	// handle a tape control key
@@ -1199,41 +1199,20 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 		}
 	}
 
-	// NETPLAY: savestates belong to the host. A load replaces machine
-	// state under one peer, and the intended use is the host saving,
-	// rehosting later, and guests resyncing to it - so a guest has no
-	// business doing either. Both also open a MENU, which stops that peer
-	// producing frames: harmless for one peer, but two peers in menus at
-	// once used to leave nobody talking at all.
-	const bool netplay_guest = netplay::manager::session_active(machine())
-			&& !netplay::manager::is_host(machine());
-
 	// handle a save state request
-	if (machine().ui_input().pressed(IPT_UI_SAVE_STATE))
+	if (machine().ui_input().pressed(IPT_UI_SAVE_STATE)
+			&& !netplay_blocked(netplay::manager::LOCK_SAVESTATE))
 	{
-		if (netplay_guest)
-		{
-			machine().popmessage(_("Only the host can save state during netplay"));
-		}
-		else
-		{
-			start_save_state();
-			return LOADSAVE_SAVE;
-		}
+		start_save_state();
+		return LOADSAVE_SAVE;
 	}
 
 	// handle a load state request
-	if (machine().ui_input().pressed(IPT_UI_LOAD_STATE))
+	if (machine().ui_input().pressed(IPT_UI_LOAD_STATE)
+			&& !netplay_blocked(netplay::manager::LOCK_LOADSTATE))
 	{
-		if (netplay_guest)
-		{
-			machine().popmessage(_("Only the host can load state during netplay"));
-		}
-		else
-		{
-			start_load_state();
-			return LOADSAVE_LOAD;
-		}
+		start_load_state();
+		return LOADSAVE_LOAD;
 	}
 
 	// handle a save snapshot request
@@ -1280,43 +1259,20 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 	if (machine().ui_input().pressed(IPT_UI_SHOW_FPS))
 		set_show_fps(!show_fps());
 
-	// NETPLAY: F8/F9/F10 and fast forward are refused during a session.
-	// Frameskip is a real desync - it perturbs emulated state on several
-	// drivers (notes/determinism.txt 3). Throttle and fast forward are not,
-	// now that a missing word is waited for rather than invented, but an
-	// unthrottled peer outruns its input every single frame and spends the
-	// session in the lockstep hold. All four are single keys sitting next to
-	// the game keys, which is the test notes/netplay-hooks.txt 6.1 applies.
-	// Unlike pause and reset there is nothing to gain by stamping them with
-	// a frame, so they are simply declined.
-	const bool netlocked = netplay::manager::session_active(machine());
-
 	// increment frameskip?
-	if (machine().ui_input().pressed(IPT_UI_FRAMESKIP_INC))
-	{
-		if (netlocked)
-			machine().popmessage(_("Frameskip is locked during netplay"));
-		else
-			increase_frameskip();
-	}
+	if (machine().ui_input().pressed(IPT_UI_FRAMESKIP_INC)
+			&& !netplay_blocked(netplay::manager::LOCK_FRAMESKIP))
+		increase_frameskip();
 
 	// decrement frameskip?
-	if (machine().ui_input().pressed(IPT_UI_FRAMESKIP_DEC))
-	{
-		if (netlocked)
-			machine().popmessage(_("Frameskip is locked during netplay"));
-		else
-			decrease_frameskip();
-	}
+	if (machine().ui_input().pressed(IPT_UI_FRAMESKIP_DEC)
+			&& !netplay_blocked(netplay::manager::LOCK_FRAMESKIP))
+		decrease_frameskip();
 
 	// toggle throttle?
-	if (machine().ui_input().pressed(IPT_UI_THROTTLE))
-	{
-		if (netlocked)
-			machine().popmessage(_("Throttle is locked during netplay"));
-		else
-			machine().video().toggle_throttle();
-	}
+	if (machine().ui_input().pressed(IPT_UI_THROTTLE)
+			&& !netplay_blocked(netplay::manager::LOCK_THROTTLE))
+		machine().video().toggle_throttle();
 
 	// toggle autofire
 	if (machine().ui_input().pressed(IPT_UI_TOGGLE_AUTOFIRE))
@@ -1333,8 +1289,12 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 		}
 	}
 
-	// check for fast forward
-	if (!netlocked && machine().ioport().type_pressed(IPT_UI_FAST_FORWARD))
+	// check for fast forward. Tested quietly rather than through
+	// netplay_blocked, because this one is HELD rather than pressed and a
+	// message would be reposted every frame and never clear.
+	if ((netplay::manager::ui_locked(machine(),
+				netplay::manager::LOCK_FASTFORWARD) == nullptr)
+			&& machine().ioport().type_pressed(IPT_UI_FAST_FORWARD))
 	{
 		machine().video().set_fastforward(true);
 		show_fps_temp(0.5);

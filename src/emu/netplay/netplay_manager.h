@@ -74,6 +74,25 @@ public:
 	// host to save, rehost later and have guests resync to it.
 	static bool is_host(running_machine &machine);
 
+	// Every UI action netplay refuses, and the single place that decides.
+	// Kept here rather than spread across ui.cpp so the policy is
+	// auditable in one read and the upstream edit stays one block.
+	// notes/netplay-hooks.txt 6.
+	enum ui_lock : u8
+	{
+		LOCK_FRAMESKIP,
+		LOCK_THROTTLE,
+		LOCK_FASTFORWARD,
+		LOCK_GFXVIEWER,
+		LOCK_SAVESTATE,
+		LOCK_LOADSTATE
+	};
+
+	// nullptr when the action is allowed, otherwise the reason to show the
+	// player. Returns nullptr for everything when no session is running, so
+	// single-player MAME behaves exactly as it always did.
+	static const char *ui_locked(running_machine &machine, u8 what);
+
 	// Called once per presentation frame from video_manager::frame_update,
 	// which unlike the ioport hooks still runs while the machine is PAUSED.
 	// A peer sitting in a MAME menu produces no frames, so none of the
