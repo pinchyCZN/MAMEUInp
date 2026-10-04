@@ -376,6 +376,56 @@ bool parse_chat(const u8 *buf, size_t len, player_t &from, char *out)
 }
 
 
+size_t build_stall(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, u8 want, u8 count)
+{
+	if ((want == 0) || (count == 0))
+		return 0;
+
+	const size_t len = control_head(buf, cap, MSG_STALL, session, frame, 4);
+	if (len == 0)
+		return 0;
+
+	// control_head zeroes bytes 8..11; the sender goes in player_mask.
+	put_u8(buf + 9, slot_bit(from));
+	put_u8(buf + HEADER_BYTES + 0, want);
+	put_u8(buf + HEADER_BYTES + 1, count);
+	put_u16(buf + HEADER_BYTES + 2, 0);
+	return len;
+}
+
+
+bool parse_stall(const u8 *buf, size_t len, frame_t &frame, player_t &from,
+		u8 &want, u8 &count)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_STALL))
+		return false;
+	if (len != STALL_BYTES)
+		return false;
+
+	from = 0;
+	for (player_t pl = 1; pl <= MAX_PLAYERS; pl++)
+	{
+		if (head.player_mask == slot_bit(pl))
+		{
+			from = pl;
+			break;
+		}
+	}
+	if (from == 0)
+		return false;
+
+	want = get_u8(buf + HEADER_BYTES + 0);
+	count = get_u8(buf + HEADER_BYTES + 1);
+	if ((want == 0) || (count == 0))
+		return false;
+
+	frame = head.base_frame;
+	return true;
+}
+
+
 bool parse_uicmd(const u8 *buf, size_t len, frame_t &effective, u8 &cmd)
 {
 	packet_header head;

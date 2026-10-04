@@ -636,20 +636,19 @@ Table of Contents
    repetition covers the common case without a round trip and a
    request can cover the tail.
 
-1.7.4.  What depth does not cover  [open]
+1.7.4.  What depth does not cover: retransmission requests
 
-   A burst of depth or more consecutive losses still ends the session,
-   and bursts arriving back to back add up: two adjacent bursts of 5
-   are ten consecutive losses. A retransmission request is the
-   remaining gap - MSG_STALL is reserved for it, 3.3 - and the shape is
-   settled: the stalled peer names the frame it lacks, because only the
-   receiver knows what is missing.
+   A burst of depth or more consecutive losses defeats redundancy, and
+   bursts arriving back to back add up: two adjacent bursts of 5 are
+   ten consecutive losses. Past that, the stalled peer asks (3.10).
 
-   A SENDER CANNOT GUESS THE FRAME. When the stall above was measured
-   the waiting peer was ten frames BEHIND the other, so the frame it
-   needed was behind the sender's most recent window. Resending the
-   last few frames unprompted would have sent words the peer already
-   had and never the one it wanted.
+   ONLY THE RECEIVER KNOWS WHAT IS MISSING, so the request cannot be
+   replaced by a peer resending its recent window unprompted. When the
+   stall in 1.7 was measured the waiting peer was ten frames BEHIND the
+   other, so the frame it needed had already left the other's recent
+   window: an unprompted resend would have carried words it already had
+   and never the one it wanted. A loss happens on the path and the
+   sender sees nothing go wrong.
 
 2.  Resync from a savestate
 
@@ -1148,7 +1147,70 @@ Table of Contents
    the whole of it. The length is checked against the datagram length
    too, so a short packet cannot be read past its end.
 
-3.10.  Typing suppresses local input, and cannot do so instantly
+3.10.  STALL, the retransmission request
+
+       header            12 bytes, 3.2. base_frame is the first frame
+                         the sender lacks; player_mask is the SENDER
+       want               1 byte, players whose words are missing
+       count              1 byte, consecutive frames wanted
+       pad                2 bytes, zero
+
+   Sent from inside the lockstep stall, first after about 8 ms and then
+   every 50 ms while the wait lasts. It repeats because the request and
+   its answer are each a single datagram and either can be lost.
+
+   A PEER NEVER ASKS FOR ITS OWN WORD. Nothing on the link can supply
+   it - only publishing puts it in the ring - so such a request could
+   never be answered and would hide the real fault, a hole in the
+   asker's own stream (1.7).
+
+   The answer is an ordinary INPUT datagram, so the responder reuses
+   the same send path as a normal publish; the words are already in its
+   ring and need no separate history. It clamps the requested run to
+   what it has actually published: the asker is behind, which is why it
+   is asking, so the run it names can reach past the end of the
+   responder's own stream.
+
+3.10.1.  Measured
+
+   dino, two peers, delay 10 batch 1, bursty loss at the sending
+   socket. Every row ran all 1194 frames with zero differing frames.
+
+   +-------+----------+-----------+-----------------------------------+
+   | burst | blackout | naks sent | note                              |
+   |       |     duty |  / served |                                   |
+   +=======+==========+===========+===================================+
+   |     0 |       0% |     0 / 0 | no loss, so no requests at all    |
+   +-------+----------+-----------+-----------------------------------+
+   |     9 |       8% |     0 / 0 | depth alone covers it             |
+   +-------+----------+-----------+-----------------------------------+
+   |    10 |       9% |     8 / 8 | first burst depth cannot cover    |
+   +-------+----------+-----------+-----------------------------------+
+   |    60 |      37% |   340 / 7 | 1 s outages                       |
+   +-------+----------+-----------+-----------------------------------+
+   |   150 |      60% |         - | 2.5 s outages                     |
+   +-------+----------+-----------+-----------------------------------+
+
+   Requests cost nothing when nothing is lost, which is the point of
+   layering them behind depth rather than using them alone: a request
+   costs a round trip, and on a 60 ms link that is about 8 frames of
+   stall on every single loss.
+
+   AT DELAY 1 THIS IS THE ONLY DEFENCE, because the depth ceiling is 1
+   (1.7.1). Measured at delay 1 with 2% loss: 30 requests sent, 29
+   served, in sync. That configuration deadlocked on the first lost
+   datagram before. [verified]
+
+   THE LIMIT IS A LINK THAT IS MOSTLY DOWN. At a 67% blackout duty
+   cycle neither peer makes progress, because a request needs a round
+   trip to SUCCEED and there is no window in which one fits. Requests
+   kept being sent and none were answered. That is a dead link rather
+   than a lossy one, and no protocol proceeds without information.
+   After about 3 s of waiting the player is told so on screen; the wait
+   itself never ends, because running a frame on incomplete input would
+   desync silently.
+
+3.11.  Typing suppresses local input, and cannot do so instantly
 
    While a line is being composed, nothing is captured from the
    controls and a neutral word is published, so a player does not fire

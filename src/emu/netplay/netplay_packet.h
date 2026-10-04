@@ -253,6 +253,24 @@ bool parse_uicmd(const u8 *buf, size_t len, frame_t &effective, u8 &cmd);
 size_t build_chat(u8 *buf, size_t cap, u16 session, frame_t frame,
 		player_t from, const char *text);
 bool parse_chat(const u8 *buf, size_t len, player_t &from, char *out);
+
+// STALL - a retransmission request, and the ONLY recovery for input
+// that redundancy depth did not cover (notes/protocol.txt 1.7.4).
+//
+//     base_frame   the first frame the sender lacks
+//     player_mask  the SENDER, as in CHAT
+//     want         players whose words are missing, one bit each
+//     count        how many consecutive frames from base_frame
+//
+// ONLY THE RECEIVER KNOWS WHAT IS MISSING. A loss happens on the path
+// and the sender sees nothing go wrong, so this cannot be replaced by a
+// peer resending its recent window unprompted - measured, the stalled
+// peer was ten frames BEHIND the other and needed a frame that was no
+// longer in the other's recent window at all.
+size_t build_stall(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, u8 want, u8 count);
+bool parse_stall(const u8 *buf, size_t len, frame_t &frame, player_t &from,
+		u8 &want, u8 &count);
 const char *uicmd_text(u8 cmd);
 
 // ---- resync ----
@@ -288,6 +306,8 @@ constexpr size_t RESYNC_REQ_FIXED = 8;
 // for nine times as much - but a cap has to exist somewhere and a line
 // nobody can read is not worth carrying.
 constexpr size_t CHAT_MAX_TEXT = 128;
+
+constexpr size_t STALL_BYTES = HEADER_BYTES + 4;
 
 // The most words any one datagram can carry, derived rather than picked:
 // a receiver sized by this cannot be overrun by a legal packet, and a

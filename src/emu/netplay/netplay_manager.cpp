@@ -12,6 +12,8 @@
 #include "netplay/netplay_manager.h"
 #include <ctime>
 #include "uiinput.h"   // NETPLAY: ui_input_manager is incomplete via emu.h
+#include "main.h"      // NETPLAY: emulator_info::draw_user_interface
+#include "osdepend.h"  // NETPLAY: osd_interface::update
 #include "netplay/netplay_hash.h"
 #include "netplay/netplay_transport.h"
 
@@ -94,6 +96,9 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_test_held(0)
 	, m_held_polls(0)
 	, m_waits(0)
+	, m_naks_sent(0)
+	, m_naks_answered(0)
+	, m_naks_served(0)
 	, m_status_path()
 	, m_status_due(0)
 	, m_idle_ticks(0)
@@ -110,6 +115,7 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_unsafe(0)
 	, m_published(0)
 	, m_own_hole(false)
+	, m_stall_warned(false)
 	, m_chat_n(0)
 	, m_chat_open(false)
 	, m_chat_len(0)
@@ -605,6 +611,15 @@ void manager::poll_link()
 		if (parse_resync(buf, len, sf, rp, rchunk, rlen))
 		{
 			take_resync_chunk(sf, rp, rchunk, rlen);
+			continue;
+		}
+
+		frame_t nak_frame = 0;
+		player_t nak_from = 0;
+		u8 nak_want = 0, nak_count = 0;
+		if (parse_stall(buf, len, nak_frame, nak_from, nak_want, nak_count))
+		{
+			answer_nak(nak_frame, nak_from, nak_want, nak_count);
 			continue;
 		}
 
@@ -1321,6 +1336,76 @@ const char *manager::chat_prompt(running_machine &machine)
 
 
 //-------------------------------------------------
+//  retransmission requests
+//-------------------------------------------------
+
+void manager::send_nak()
+{
+	if (!m_link)
+		return;
+
+	// Only what is actually missing. at(m_frame).have carries the words
+	// in hand; anything in m_need that is not there is what to ask for.
+	// A stale slot counts as having nothing.
+	const slot &sl = at(m_frame);
+	const u8 held = (sl.stamp == m_frame) ? sl.have : 0;
+	const u8 want = u8(m_need & ~held);
+	if (want == 0)
+		return;
+
+	// NEVER ASK FOR OUR OWN WORD. Nothing on the link can supply it -
+	// only publishing puts it in the ring - so a request for it would
+	// never be answered and would hide the real fault, which is a hole in
+	// our own stream. wait_for_input reports that case separately.
+	if ((want & ~slot_bit(m_local)) == 0)
+		return;
+
+	// Ask for a run rather than one frame: if several are missing, one
+	// request and one reply cover them all, and the reply is the same
+	// size as an ordinary input packet either way.
+	unsigned count = m_depth * m_batch;
+	if (count < 1)
+		count = 1;
+	if (count > 255)
+		count = 255;
+
+	u8 buf[MAX_DATAGRAM];
+	const size_t len = build_stall(buf, sizeof(buf), 0, m_frame, m_local,
+			u8(want & ~slot_bit(m_local)), u8(count));
+	if (len == 0)
+		return;
+
+	m_link->send(buf, len);
+	m_naks_sent++;
+}
+
+
+void manager::answer_nak(frame_t frame, player_t from, u8 want, u8 count)
+{
+	// Relayed to every peer, so most of these are not ours to answer.
+	if ((from == m_local) || ((want & slot_bit(m_local)) == 0))
+		return;
+
+	m_naks_answered++;
+
+	// CLAMP TO WHAT HAS BEEN PUBLISHED. The asker names a run that may
+	// reach past what this peer has produced - it is behind, which is why
+	// it is asking - and send_window walks BACK from its newest frame, so
+	// an unpublished newest would break the walk immediately and send
+	// nothing at all.
+	frame_t newest = frame + frame_t(count) - 1;
+	if (newest > m_published)
+		newest = m_published;
+	if (newest < frame)
+		return;
+
+	const unsigned span = unsigned(newest - frame) + 1;
+	if (send_window(newest, span, 0) != 0)
+		m_naks_served++;
+}
+
+
+//-------------------------------------------------
 //  wait_for_input - the lockstep stall
 //-------------------------------------------------
 
@@ -1338,6 +1423,7 @@ void manager::wait_for_input()
 	if (!gated && !m_net_paused && complete(m_frame))
 	{
 		m_held_polls = 0;
+		m_stall_warned = false;
 		return;
 	}
 
@@ -1380,14 +1466,9 @@ void manager::wait_for_input()
 	// frame_update is how MAME pumps it, and the debugger uses exactly this
 	// to stay alive while the emulation is stopped.
 	//
-	// LANDMINE: from_debugger=true does NOT make that call side-effect
-	// free. finish_screen_updates() runs whenever the machine is RUNNING
-	// and not paused, and it writes screen partial-update state that IS
-	// part of the save set. Measured on two peers: pumping unpaused left
-	// Video Screen/:screen/0/m_last_partial_scan and
-	// timer/:screen/2/0/m_start.attoseconds different between them - 2 of
-	// 931 entries - purely because one peer stalled more often than the
-	// other. Pausing first is what makes the pump safe.
+	// LANDMINE: video_manager::frame_update CANNOT be used for that, at
+	// any pause state. It perturbs two save-set entries; the pump below
+	// calls only the two pieces that draw. See the comment there.
 	// PAUSE LAZILY. Pausing dims the screen and puts [paused] in the FPS
 	// overlay (video.cpp), so pausing for every few-millisecond jitter
 	// stall makes the picture flicker - badly, if the peer is unthrottled
@@ -1424,7 +1505,27 @@ void manager::wait_for_input()
 		// and pumping that often renders a thousand frames a second.
 		if (want_pause && ((m_held_polls % 16) == 0))
 		{
-			m_machine.video().frame_update(true);
+			// DRAW, BUT DO NOT CALL video_manager::frame_update.
+			//
+			// It ends with
+			//
+			//     if (screen && (paused() || from_debugger || ...))
+			//         screen->reset_partial_updates();
+			//
+			// and reset_partial_updates writes m_last_partial_scan and
+			// re-adjusts m_scanline0_timer. BOTH ARE IN THE SAVE SET, so a
+			// peer that pumps while held ends up holding different machine
+			// state from one that did not - measured as exactly two entries
+			// of 931 diverging, m_last_partial_scan and
+			// timer/:screen/2/0/m_start.attoseconds.
+			//
+			// PAUSING DOES NOT AVOID IT. Pausing skips
+			// finish_screen_updates, but from_debugger=true satisfies that
+			// condition on its own, so the reset fires either way. These two
+			// calls are the subset that draws - the UI into the container,
+			// then the blit - and neither touches emulated state.
+			emulator_info::draw_user_interface(m_machine);
+			m_machine.osd().update(false);
 
 			// LATCH THE UI KEYS BY HAND. ui_input_manager::frame_update is
 			// registered on MACHINE_NOTIFY_FRAME, and
@@ -1443,6 +1544,42 @@ void manager::wait_for_input()
 
 		poll_link();
 		apply_ui_command();
+
+		// ASK FOR WHAT IS MISSING. Redundancy covers a burst shorter than
+		// its depth and nothing longer, so this is the only way a session
+		// survives a longer one. A deliberate pause is not a loss, and a
+		// session that has not started yet has nothing to ask for.
+		if (!m_net_paused && !gated_now()
+				&& (m_held_polls >= NAK_FIRST)
+				&& (((m_held_polls - NAK_FIRST) % NAK_REPEAT) == 0))
+		{
+			send_nak();
+		}
+
+		// SAY SO ON SCREEN. A wait this long is no longer jitter or a lost
+		// packet being re-asked for - the link is down or the peer is gone.
+		// The session still waits rather than inventing input, so without
+		// this the player sees a frozen picture and no reason for it.
+		if (!m_net_paused && !gated_now() && !m_stall_warned
+				&& (m_held_polls >= m_stall_limit))
+		{
+			m_stall_warned = true;
+			player_t who = 0;
+			const slot &sl = at(m_frame);
+			const u8 held = (sl.stamp == m_frame) ? sl.have : 0;
+			for (player_t pl = 1; pl <= MAX_PLAYERS; pl++)
+			{
+				if (((m_need & slot_bit(pl)) != 0)
+						&& ((held & slot_bit(pl)) == 0))
+				{
+					who = pl;
+					break;
+				}
+			}
+			m_machine.popmessage(
+					"Waiting for player %d - the connection may be down",
+					int(who));
+		}
 
 		m_held_polls++;
 		since_keepalive++;
@@ -1844,6 +1981,12 @@ void manager::write_status()
 	std::fprintf(f, "delay=%d\n", int(m_delay));
 	std::fprintf(f, "batch=%d\n", int(m_batch));
 	std::fprintf(f, "depth=%d\n", int(m_depth));
+	std::fprintf(f, "naks_sent=%llu\n",
+			static_cast<unsigned long long>(m_naks_sent));
+	std::fprintf(f, "naks_answered=%llu\n",
+			static_cast<unsigned long long>(m_naks_answered));
+	std::fprintf(f, "naks_served=%llu\n",
+			static_cast<unsigned long long>(m_naks_served));
 	std::fprintf(f, "budget=%d\n", int(m_delay) - int(m_batch) + 1);
 
 	std::fprintf(f, "frame=%u\n", unsigned(m_frame));
@@ -1916,11 +2059,15 @@ void manager::on_exit()
 	}
 
 	osd_printf_info("netplay: %u frames, stalls=%llu stall_frames=%llu "
-			"waits=%llu malformed=%llu sent=%llu recv=%llu dropped=%llu\n",
+			"waits=%llu naks=%llu/%llu served=%llu "
+			"malformed=%llu sent=%llu recv=%llu dropped=%llu\n",
 			unsigned(m_frame),
 			static_cast<unsigned long long>(m_stalls),
 			static_cast<unsigned long long>(m_stall_frames),
 			static_cast<unsigned long long>(m_waits),
+			static_cast<unsigned long long>(m_naks_sent),
+			static_cast<unsigned long long>(m_naks_answered),
+			static_cast<unsigned long long>(m_naks_served),
 			static_cast<unsigned long long>(m_malformed),
 			static_cast<unsigned long long>(m_link ? m_link->sent_count() : 0),
 			static_cast<unsigned long long>(m_link ? m_link->recv_count() : 0),

@@ -347,6 +347,48 @@ Table of Contents
    no resync involved, so round-trip is necessary and not
    sufficient. Cause not yet established. [verified]
 
+6.3.  Pumping the display during a stall perturbs two save entries
+
+   A peer holding a frame still has to service its window, and
+   video_manager::frame_update is how MAME does that. It CANNOT be used
+   for it. The function ends with
+
+       if (screen && (machine().paused() || from_debugger || ...))
+           screen->reset_partial_updates();
+
+   and reset_partial_updates writes m_last_partial_scan and re-adjusts
+   m_scanline0_timer. Both are registered save items, so a peer that
+   pumped while waiting holds different machine state from one that did
+   not. [verified, video.cpp video_manager::frame_update and
+   screen.cpp screen_device::reset_partial_updates]
+
+   Measured: exactly 2 entries of 931 diverge,
+   Video Screen/:screen/0/m_last_partial_scan and
+   timer/:screen/2/0/m_start.attoseconds, on frames where one peer had
+   stalled long enough to pump. The input stream was byte-identical on
+   every frame at the same time, which is what rules the input path out.
+   [verified, NETPLAY_ENTRYLOG per-entry dump]
+
+   PAUSING FIRST DOES NOT AVOID IT, and believing otherwise cost a
+   session. Pausing does suppress finish_screen_updates earlier in the
+   same function, but from_debugger=true satisfies the reset condition
+   on its own, so the reset fires at any pause state.
+
+   What is safe is the subset that only draws:
+
+       emulator_info::draw_user_interface(machine)
+       machine.osd().update(false)
+
+   The UI into the render container, then the blit. Neither touches
+   emulated state.
+
+   THE SYMPTOM IS TRANSIENT, WHICH MAKES IT WORSE. The two entries
+   re-converge within a frame or two, so a whole-state hash sampled
+   sparsely reports a handful of odd frames in an otherwise clean run -
+   it looks like a glitch in the hash rather than a desync in the
+   emulation. It stayed hidden until stalls became long enough to reach
+   the pump at all.
+
 7.  Open questions
 
    o -numprocessors and the threaded rasterizers. MAME dispatches some

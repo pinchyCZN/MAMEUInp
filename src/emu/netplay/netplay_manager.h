@@ -186,10 +186,28 @@ private:
 	// first anyway.
 	static constexpr unsigned REDUNDANCY_MAX = 16;
 
-	// A wait this long is not jitter. Ending it runs a frame on incomplete
-	// input, which is a desync and what resync exists for, so it is counted
-	// rather than hidden. [open]
-	static constexpr unsigned STALL_LIMIT = 240;
+	// Retransmission request cadence, in hold-loop polls. transport::wait
+	// is about a millisecond, so these are roughly milliseconds.
+	//
+	// FIRST is short because the cost of a request is a round trip and
+	// that is the whole latency being added; REPEAT is longer than one
+	// round trip on a typical link so a reply gets a chance to arrive,
+	// but short enough that a lost request or lost reply is retried
+	// quickly. Both the request and its answer are single datagrams and
+	// can themselves be lost, which is why this repeats at all.
+	static constexpr unsigned NAK_FIRST = 8;
+	static constexpr unsigned NAK_REPEAT = 50;
+
+	// When to tell the player a wait has stopped being normal, in poll
+	// iterations of about a millisecond - so about three seconds. By then
+	// redundancy has not covered it and several retransmission requests
+	// have gone unanswered, which means the link is down or the peer is
+	// gone, not that a packet was lost.
+	//
+	// THE WAIT DOES NOT END. Running a frame on incomplete input would
+	// desync silently and permanently; this only puts a message on the
+	// screen so a frozen picture has a reason attached to it.
+	static constexpr unsigned STALL_LIMIT = 3000;
 
 	// Hold this long, in poll iterations of about a millisecond, before
 	// pausing and pumping the display. Short stalls are ordinary jitter and
@@ -229,6 +247,11 @@ private:
 	// frames are new, and only sets FLAG_REDUNDANT truthfully. Returns
 	// the frames sent.
 	unsigned send_window(frame_t newest, unsigned span, unsigned fresh);
+
+	// Ask the peers for the words this peer is missing, and answer such a
+	// request from another peer. notes/protocol.txt 1.7.4
+	void send_nak();
+	void answer_nak(frame_t frame, player_t from, u8 want, u8 count);
 	void resend_last();
 	void poll_link();
 	void wait_for_input();
@@ -312,6 +335,9 @@ private:
 	// warning the player sees.
 	u64                         m_held_polls;
 	u64                         m_waits;
+	u64                         m_naks_sent;
+	u64                         m_naks_answered;
+	u64                         m_naks_served;
 	char                        m_missing[96];
 
 	// Where to dump the status readout, and how long since the last one.
@@ -352,6 +378,7 @@ private:
 	// See frame_end - this is what makes a hole in the stream impossible.
 	frame_t                     m_published;
 	bool                        m_own_hole;     // reported once
+	bool                        m_stall_warned;
 
 	// Chat. osd_ticks drives the expiry, which is safe only because none
 	// of this reaches emulated state - see determinism.txt 2.2 for the
