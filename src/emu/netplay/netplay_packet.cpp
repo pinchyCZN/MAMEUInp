@@ -13,6 +13,8 @@
 #endif
 #include "netplay/netplay_packet.h"
 
+#include <cstring>
+
 
 namespace netplay {
 
@@ -75,7 +77,7 @@ bool parse_header(const u8 *buf, size_t len, packet_header &head)
 	head.reserved = get_u8(buf + 11);
 
 	// A zero type is always malformed - see the numbering note in the header.
-	if ((head.type == 0) || (head.type > MSG_UICMD))
+	if ((head.type == 0) || (head.type > MSG_RESYNC_REQ))
 		return false;
 	if (head.version != PROTOCOL_VERSION)
 		return false;
@@ -316,6 +318,109 @@ const char *uicmd_text(u8 cmd)
 	case UICMD_SOFT_RESET:   return "soft reset";
 	default:                 return "unknown";
 	}
+}
+
+
+//-------------------------------------------------
+//  resync
+//-------------------------------------------------
+
+size_t build_resync_req(u8 *buf, size_t cap, u16 session,
+		const resync_req_payload &p)
+{
+	if (p.bitmap_bytes > sizeof(p.bitmap))
+		return 0;
+
+	const size_t len = control_head(buf, cap, MSG_RESYNC_REQ, session, 0,
+			RESYNC_REQ_FIXED + p.bitmap_bytes);
+	if (len == 0)
+		return 0;
+
+	u8 *const q = buf + HEADER_BYTES;
+	put_u32(q + 0, p.id);
+	put_u16(q + 4, p.want);
+	put_u16(q + 6, p.bitmap_bytes);
+	for (unsigned i = 0; i < p.bitmap_bytes; i++)
+		q[8 + i] = p.bitmap[i];
+	return len;
+}
+
+
+bool parse_resync_req(const u8 *buf, size_t len, resync_req_payload &p)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_RESYNC_REQ))
+		return false;
+	if (len < (HEADER_BYTES + RESYNC_REQ_FIXED))
+		return false;
+
+	const u8 *const q = buf + HEADER_BYTES;
+	p.id = get_u32(q + 0);
+	p.want = get_u16(q + 4);
+	p.bitmap_bytes = get_u16(q + 6);
+
+	// The declared bitmap length has to match the datagram exactly, or a
+	// short packet would be read past its end.
+	if (p.bitmap_bytes > sizeof(p.bitmap))
+		return false;
+	if (len != (HEADER_BYTES + RESYNC_REQ_FIXED + p.bitmap_bytes))
+		return false;
+
+	std::memset(p.bitmap, 0, sizeof(p.bitmap));
+	for (unsigned i = 0; i < p.bitmap_bytes; i++)
+		p.bitmap[i] = q[8 + i];
+	return true;
+}
+
+
+size_t build_resync(u8 *buf, size_t cap, u16 session, frame_t state_frame,
+		const resync_payload &p, const u8 *chunk, size_t chunk_len)
+{
+	if ((chunk == nullptr) || (chunk_len == 0))
+		return 0;
+	if ((RESYNC_HEAD_BYTES + chunk_len) > cap)
+		return 0;
+	if ((RESYNC_HEAD_BYTES + chunk_len) > MAX_DATAGRAM)
+		return 0;
+
+	const size_t len = control_head(buf, cap, MSG_RESYNC, session, state_frame,
+			12 + chunk_len);
+	if (len == 0)
+		return 0;
+
+	u8 *const q = buf + HEADER_BYTES;
+	put_u32(q + 0, p.id);
+	put_u32(q + 4, p.total);
+	put_u16(q + 8, p.chunks);
+	put_u16(q + 10, p.index);
+	for (size_t i = 0; i < chunk_len; i++)
+		q[12 + i] = chunk[i];
+	return len;
+}
+
+
+bool parse_resync(const u8 *buf, size_t len, frame_t &state_frame,
+		resync_payload &p, const u8 *&chunk, size_t &chunk_len)
+{
+	chunk = nullptr;
+	chunk_len = 0;
+
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_RESYNC))
+		return false;
+	if (len <= RESYNC_HEAD_BYTES)
+		return false;
+
+	state_frame = head.base_frame;
+	const u8 *const q = buf + HEADER_BYTES;
+	p.id = get_u32(q + 0);
+	p.total = get_u32(q + 4);
+	p.chunks = get_u16(q + 8);
+	p.index = get_u16(q + 10);
+
+	chunk = q + 12;
+	chunk_len = len - RESYNC_HEAD_BYTES;
+	return true;
 }
 
 } // namespace netplay

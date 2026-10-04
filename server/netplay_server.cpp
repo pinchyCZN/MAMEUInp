@@ -476,9 +476,17 @@ void relay::run()
 
 		case MSG_INPUT:
 		case MSG_UICMD:
-			// Both are forwarded verbatim. A UI command carries the frame it
-			// takes effect on, so the server has no more reason to understand
-			// it than it does an input word.
+		case MSG_RESYNC_REQ:
+		case MSG_RESYNC:
+			// All forwarded verbatim. A UI command carries the frame it takes
+			// effect on and a resync chunk carries its own index and id, so the
+			// server has no more reason to understand any of them than it does
+			// an input word.
+			//
+			// Sent to every OTHER peer rather than to the one that wants it:
+			// a guest ignores a request it did not make and a chunk it is not
+			// waiting for, so addressing costs a peer table lookup to save
+			// bandwidth that only matters above two players. [open]
 			on_input(from, buf, size_t(n));
 			break;
 

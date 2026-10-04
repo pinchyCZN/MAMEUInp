@@ -1086,6 +1086,19 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 		return true;
 	};
 
+	// NETPLAY: Ctrl+Shift+R asks the host for its machine state. A raw key
+	// test rather than an IPT_UI_* type because every function key is
+	// already bound in inpttype.h, and adding a type there means editing a
+	// large upstream enum for one binding. Three keys together because a
+	// resync is disruptive and must not be reachable by accident - the same
+	// test notes/netplay-hooks.txt 6.1 applies to everything else.
+	if (machine().input().code_pressed(KEYCODE_LCONTROL)
+			&& machine().input().code_pressed(KEYCODE_LSHIFT)
+			&& machine().input().code_pressed_once(KEYCODE_R))
+	{
+		netplay::manager::request_resync(machine());
+	}
+
 	// is ScrLk UI toggling applicable here?
 	if (has_keyboard)
 	{

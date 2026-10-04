@@ -34,10 +34,12 @@
 
 #include "netplay/netplay_inputmap.h"
 #include "netplay/netplay_packet.h"
+#include "netplay/netplay_resync.h"
 #include "netplay/netplay_transport.h"
 #include "netplay/netplay_types.h"
 
 #include <cstdio>
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -68,6 +70,11 @@ public:
 	// that cannot be made safe by stamping them with a frame - see
 	// notes/netplay-hooks.txt 6.
 	static bool session_active(running_machine &machine);
+
+	// The frame whose input was just applied, for stamping diagnostics.
+	// False when no session owns this machine, leaving the caller to use
+	// its own clock. Callers run after frame_end, hence m_frame - 1.
+	static bool stamp_frame(running_machine &machine, u64 &frame);
 
 	// Slot 1 is the host. Savestate load and save are the host's alone:
 	// a load replaces machine state under one peer, and the plan is for the
@@ -101,6 +108,16 @@ public:
 	// savestate prompt killed the session.
 	static void idle_update(running_machine &machine);
 
+	// Called from running_machine::run between timeslices - the only point
+	// MAME itself saves or loads at. Resync capture and restore happen
+	// here; see the comment at the call site.
+	static void safe_point(running_machine &machine);
+
+	// A guest asking the host for its machine state. Deliberate only -
+	// see the hotkey note in ui.cpp. Returns false when there is nothing
+	// to ask (no session, or this peer IS the host).
+	static bool request_resync(running_machine &machine);
+
 	// public only because std::unique_ptr holds one; construction stays
 	// private so a session can only come from open_session()
 	~manager();
@@ -112,7 +129,13 @@ public:
 private:
 	// Enough for any delay worth having: at 60 Hz, 128 frames is 2.1 s, and
 	// a lockstep session two seconds behind has already failed.
-	static constexpr unsigned RING = 128;
+	// Must cover the largest lag a resync can open. The guest rewinds its
+	// frame counter to the state's frame and replays forward, so every
+	// frame between there and the present needs its words STILL in the
+	// ring. A transfer plus the replay can span a couple of seconds, so
+	// 128 frames was far too few. 1024 is about 17 seconds and costs
+	// 1024 x (4 + 1 + 80) bytes, which is nothing.
+	static constexpr unsigned RING = 1024;
 
 	// The tier ladder tops out at 6 frames per packet (protocol.txt 1.6);
 	// 8 leaves headroom without making the buffers interesting.
@@ -165,6 +188,15 @@ private:
 	void check_selftest();
 	void on_exit();
 	void write_status();
+	void send_resync_req();
+	void serve_resync(const resync_req_payload &req);
+	void take_resync_chunk(frame_t state_frame, const resync_payload &p,
+			const u8 *chunk, size_t chunk_len);
+	void apply_resync();
+	void pump_resync_send();
+	void service_resync();
+	void do_capture();
+	void test_corrupt();
 
 	running_machine &           m_machine;
 	inputmap                    m_map;
@@ -240,6 +272,54 @@ private:
 	std::string                 m_status_path;
 	u64                         m_status_due;
 	u64                         m_idle_ticks;
+
+	// ---- resync ----
+	//
+	// NOBODY PAUSES. The guest stays in lockstep throughout: a desync is
+	// divergent state, not divergent frame numbers, so input keeps being
+	// exchanged and the guest keeps publishing its own words. That is what
+	// makes the catch-up a replay out of its OWN ring rather than
+	// something that has to be fetched.
+	state_blob                  m_blob;         // sending or receiving
+	u32                         m_resync_id;
+	bool                        m_resync_wanted;
+	bool                        m_resync_serving;
+	frame_t                     m_resync_frame;
+	u64                         m_resync_nag;
+	std::deque<unsigned>        m_send_queue;   // chunk indices still to go
+
+	// Capture and apply happen at frame_begin only, so m_resync_frame
+	// always means "state as of the START of this frame" on both sides.
+	// poll_link runs from frame_begin AND frame_end, so doing the work
+	// where the packet arrives would make that frame number mean
+	// before-the-frame on one path and after-it on the other.
+	bool                        m_req_pending;
+	resync_req_payload          m_req;
+	bool                        m_resync_ready;
+	bool                        m_capture_pending;
+	unsigned                    m_unsafe;       // safe points can_save refused
+
+	// Highest frame whose local word has gone out; 0 before the first.
+	// See frame_end - this is what makes a hole in the stream impossible.
+	frame_t                     m_published;
+	bool                        m_own_hole;     // reported once
+
+	// Replaying already-known input to close the gap. Capture and publish
+	// are suppressed while this is set: those frames were captured and
+	// published once already, and re-reading the live controls would
+	// invent input the other peer never saw.
+	bool                        m_replaying;
+	frame_t                     m_replay_until;
+	bool                        m_catchup;
+	u64                         m_resyncs;
+
+	// DIAGNOSTIC. A resync can only be shown to work by breaking the
+	// session first: NETPLAY_TEST_CORRUPT_AT scribbles on a save entry at
+	// that frame, NETPLAY_TEST_RESYNC_AT asks for a state at that one. The
+	// hash logs then have to diverge and converge again, which is the only
+	// evidence that recovery happened rather than nothing happening.
+	frame_t                     m_test_corrupt_at;
+	frame_t                     m_test_resync_at;
 
 	bool                        m_selftest;
 	u64                         m_selftest_fail;

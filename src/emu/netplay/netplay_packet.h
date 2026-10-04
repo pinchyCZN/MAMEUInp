@@ -54,7 +54,8 @@ enum msg_type : u8
 	MSG_STALL   = 0x09,
 	MSG_CHAT    = 0x0a,
 	MSG_BYE     = 0x0b,
-	MSG_UICMD   = 0x0c
+	MSG_UICMD   = 0x0c,
+	MSG_RESYNC_REQ = 0x0d
 };
 
 // 3.4
@@ -239,6 +240,45 @@ size_t build_uicmd(u8 *buf, size_t cap, u16 session, frame_t effective,
 		u8 cmd);
 bool parse_uicmd(const u8 *buf, size_t len, frame_t &effective, u8 &cmd);
 const char *uicmd_text(u8 cmd);
+
+// ---- resync ----
+//
+// RESYNC_REQ doubles as the retransmission request: the bitmap says which
+// chunks are still wanted, so one message covers both 'send me a state'
+// and 'I am missing these'. id is 0 on a first ask and the host's assigned
+// id thereafter, which stops a late chunk from an abandoned attempt being
+// mistaken for part of the current one.
+struct resync_req_payload
+{
+	u32     id;                 // 0 = start a new transfer
+	u16     want;               // how many chunks the bitmap asks for
+	u16     bitmap_bytes;       // length actually carried
+	u8      bitmap[1024];       // RESYNC_BITMAP_MAX
+};
+
+// A RESYNC packet's header base_frame is THE FRAME THE STATE IS AS OF,
+// which is what the receiver rewinds its frame counter to.
+struct resync_payload
+{
+	u32     id;
+	u32     total;              // bytes in the whole blob
+	u16     chunks;             // chunks in the whole blob
+	u16     index;              // which chunk this is
+};
+
+// Variable length: 8 fixed bytes plus however many bitmap bytes the
+// chunk count needs. A 13-chunk transfer carries 2, not 1024.
+constexpr size_t RESYNC_REQ_FIXED = 8;
+constexpr size_t RESYNC_HEAD_BYTES = HEADER_BYTES + 12;
+
+size_t build_resync_req(u8 *buf, size_t cap, u16 session,
+		const resync_req_payload &p);
+bool parse_resync_req(const u8 *buf, size_t len, resync_req_payload &p);
+
+size_t build_resync(u8 *buf, size_t cap, u16 session, frame_t state_frame,
+		const resync_payload &p, const u8 *chunk, size_t chunk_len);
+bool parse_resync(const u8 *buf, size_t len, frame_t &state_frame,
+		resync_payload &p, const u8 *&chunk, size_t &chunk_len);
 
 // Bytes an INPUT packet of this shape occupies.
 inline size_t input_bytes(unsigned nframes, u8 player_mask, bool hash)

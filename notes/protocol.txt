@@ -883,6 +883,11 @@ Table of Contents
    +------+---------+-------------+--------------------------------------+
    | 0x0b | BYE     | both        | leaving, with a reason               |
    +------+---------+-------------+--------------------------------------+
+   | 0x0c | UICMD   | both        | frame-stamped pause or reset (2.6)   |
+   +------+---------+-------------+--------------------------------------+
+   | 0x0d | RSYNCRQ | peer -> all | ask for state, or name missing       |
+   |      |         |             | chunks, 3.7                          |
+   +------+---------+-------------+--------------------------------------+
 
    Numbering starts at 1 so that a zero first byte is always a malformed
    packet rather than a valid message.
@@ -930,6 +935,91 @@ Table of Contents
    that diverges is not visible in the hash on the frame it is applied,
    only on the next, because it has not reached RAM yet. Check runs of
    consecutive frames, not isolated ones.
+
+3.7.  RSYNCRQ and RESYNC
+
+       RSYNCRQ
+       header            12 bytes, 3.2
+       id                 4 bytes, 0 asks for a fresh snapshot
+       want               2 bytes, chunks still missing
+       bitmap_bytes       2 bytes, length of the field below
+       bitmap             bitmap_bytes, bit i set = chunk i wanted
+
+       RESYNC
+       header            12 bytes, base_frame is the state frame
+       id                 4 bytes, matches the RSYNCRQ answered
+       total              4 bytes, deflated size of the whole blob
+       chunks             2 bytes, how many this blob is cut into
+       index              2 bytes, which chunk this is
+       payload           1024 bytes, or the remainder on the last
+
+   bitmap_bytes is (chunks + 7) / 8 and is sent at exactly that
+   length, so a 10-chunk transfer carries two bytes of bitmap rather
+   than padding to the maximum. A receiver must reject a datagram
+   whose length is not 12 + 8 + bitmap_bytes; otherwise a short
+   packet reads past its end.
+
+   ONE MESSAGE DOES BOTH JOBS. id 0 means "I have nothing, send it
+   all"; any other id names a blob already in flight and the bitmap
+   names the chunks still missing. A guest repeats the request about
+   twice a second until the blob is complete, so a dropped chunk
+   costs a round trip rather than the transfer.
+
+   The blob is deflated at level 6 (2.4 for why that matters, and for
+   the inversion that makes it matter least where it is needed most).
+   Measured on dino: 444 KB of registered state becomes 9 KB in 10
+   chunks. [verified]
+
+   SENDING IS PACED, 32 chunks a frame. Handing a whole blob to the
+   socket in one call overruns its buffer and most of it is dropped
+   before anyone reads it, which presents as a transfer that never
+   finishes. 32 KB a frame is about 1.9 MB/s.
+
+3.8.  What a resync does to the two ends
+
+   NEITHER END PAUSES. The host snapshots and carries on playing; the
+   guest keeps emulating while chunks arrive, then restores, then runs
+   unthrottled until it has caught up with the live stream.
+
+   Capture and restore both happen at MAME's scheduler-safe point and
+   nowhere else. That is a determinism constraint with a trap in it,
+   so it is recorded once, in determinism.txt 6.1.
+
+   The frame on the wire is the NEXT frame to be injected, which is
+   what m_frame holds at every safe point. The guest adopts it
+   verbatim and injects that frame next, from a machine sitting
+   mid-frame exactly where the host sat.
+
+   ONE RULE DECIDES WHAT GOES ON THE WIRE: every frame after the
+   high-water mark, up to frame + delay, and nothing else. It has to
+   satisfy two constraints at once, and they are not symmetric.
+
+   Re-publishing a frame overwrites a word the host has already
+   consumed, so a replay must stay silent. It does so with no test for
+   it: while replaying, frame + delay is still behind the high-water
+   mark, so nothing is sent.
+
+   A HOLE IN THE STREAM STALLS EVERY PEER FOREVER. One frame with no
+   word from one peer cannot be skipped and nothing will ever produce
+   it, so both ends wait until they are killed. Worse, a peer can wait
+   on its OWN word, which only publishing puts in the ring, so that
+   wait can never end. The frame a replay finishes on is exactly where
+   the hole opens: the counter has moved while the stream has not.
+   Filling it repeats an input - a visible artifact; a hole is the end
+   of the session.
+
+   THE FILL CANNOT BE A SEPARATE REPAIR STEP, and delay 1 is why. At a
+   larger delay the frames already published cover the gap, so a
+   repair running one frame later still closes it; at delay 1 there is
+   no slack and the next frame blocks waiting for the missing word
+   before any later frame can repair anything. The fill has to be the
+   same rule that does the normal publish. Two rules that each looked
+   right passed every test at delay 6 and deadlocked at delay 1.
+
+   End to end on dino, guest corrupted on purpose then resynced:
+   diverges at the corruption, converges at the resync frame, and
+   holds bit-identical for the rest of the run - 1289 frames and 919
+   frames at two different resync points. [verified]
 
 4.  Handshake
 

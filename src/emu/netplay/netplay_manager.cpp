@@ -104,6 +104,25 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_status_path()
 	, m_status_due(0)
 	, m_idle_ticks(0)
+	, m_blob()
+	, m_resync_id(0)
+	, m_resync_wanted(false)
+	, m_resync_serving(false)
+	, m_resync_frame(0)
+	, m_resync_nag(0)
+	, m_req_pending(false)
+	, m_req()
+	, m_resync_ready(false)
+	, m_capture_pending(false)
+	, m_unsafe(0)
+	, m_published(0)
+	, m_own_hole(false)
+	, m_replaying(false)
+	, m_replay_until(0)
+	, m_catchup(false)
+	, m_resyncs(0)
+	, m_test_corrupt_at(0)
+	, m_test_resync_at(0)
 	, m_selftest(selftest)
 	, m_selftest_fail(0)
 	, m_log(nullptr)
@@ -133,6 +152,13 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 			s.words[p] = 0;
 	}
 
+	// Those primed frames are published, as far as the stream is
+	// concerned: nothing may ever write them again. Starting the
+	// high-water mark here is what lets one rule cover both the first
+	// frame and every frame after a resync. m_delay is clamped to 1 or
+	// more before we are constructed.
+	m_published = frame_t(m_delay) - 1;
+
 	machine.add_notifier(MACHINE_NOTIFY_EXIT,
 			machine_notify_delegate(&manager::on_exit, this));
 }
@@ -154,7 +180,7 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 	{
 		// notes/protocol.txt 4.4: a driver the table cannot represent is a
 		// refused session, not a warning.
-		osd_printf_error("netplay: %s refused - %s\n",
+		osd_printf_info("netplay: %s refused - %s\n",
 				m_machine.system().name,
 				(m_map.unowned() != 0)
 						? "digital fields with no owner in the table"
@@ -185,9 +211,15 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 		}
 		else
 		{
-			osd_printf_error("netplay: unable to open log '%s'\n", logpath);
+			osd_printf_info("netplay: unable to open log '%s'\n", logpath);
 		}
 	}
+
+	osd_printf_info("netplay: state is %d KB, resync limit %d KB, %s\n",
+			int(state_blob::machine_state_size(m_machine) / 1024),
+			int(RESYNC_MAX_BYTES / 1024),
+			(state_blob::machine_state_size(m_machine) <= RESYNC_MAX_BYTES)
+					? "resync possible" : "RESYNC WILL BE REFUSED");
 
 	osd_printf_info("netplay: %s players=%d local=%d delay=%d batch=%d budget=%d bits=%d digest=%016llx\n",
 			m_link->name(), int(m_players), int(m_local), int(m_delay),
@@ -261,7 +293,7 @@ void manager::open_session(running_machine &machine)
 		inputmap probe;
 		if (!probe.build(machine))
 		{
-			osd_printf_error("netplay: %s cannot be represented; not joining\n",
+			osd_printf_info("netplay: %s cannot be represented; not joining\n",
 					machine.system().name);
 			return;
 		}
@@ -302,6 +334,8 @@ void manager::open_session(running_machine &machine)
 	if (!unset(status))
 		candidate->m_status_path = status;
 	candidate->m_test_pause_at = frame_t(env_uint("NETPLAY_TEST_PAUSE_AT", 0));
+	candidate->m_test_corrupt_at = frame_t(env_uint("NETPLAY_TEST_CORRUPT_AT", 0));
+	candidate->m_test_resync_at = frame_t(env_uint("NETPLAY_TEST_RESYNC_AT", 0));
 	// DEFAULT 0, NOT A NUMBER. A non-zero default made every netplay pause
 	// in a real session resume itself after a couple of seconds, because
 	// the hold honours this whenever it is set. Observed as a pause that
@@ -491,6 +525,30 @@ void manager::poll_link()
 		u64 hash = 0;
 		bool has_hash = false;
 
+		resync_req_payload rq;
+		if (parse_resync_req(buf, len, rq))
+		{
+			// Recorded, not acted on - see m_req_pending. A fresh ask
+			// outranks a retransmission request: the retransmission
+			// names chunks of a blob that is about to be replaced.
+			if (!m_req_pending || (rq.id == 0))
+			{
+				m_req = rq;
+				m_req_pending = true;
+			}
+			continue;
+		}
+
+		frame_t sf = 0;
+		resync_payload rp;
+		const u8 *rchunk = nullptr;
+		size_t rlen = 0;
+		if (parse_resync(buf, len, sf, rp, rchunk, rlen))
+		{
+			take_resync_chunk(sf, rp, rchunk, rlen);
+			continue;
+		}
+
 		frame_t eff = 0;
 		u8 cmd = 0;
 		if (parse_uicmd(buf, len, eff, cmd))
@@ -614,6 +672,17 @@ void manager::send_uicmd(u8 cmd)
 }
 
 
+bool manager::stamp_frame(running_machine &machine, u64 &frame)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return false;
+
+	frame = (m->m_frame == 0) ? 0 : u64(m->m_frame - 1);
+	return true;
+}
+
+
 bool manager::session_active(running_machine &machine)
 {
 	return (active() != nullptr) && (s_owner == &machine);
@@ -710,6 +779,294 @@ bool manager::ui_request(running_machine &machine, u8 cmd)
 
 
 //-------------------------------------------------
+//  resync: ask, serve, assemble, apply
+//-------------------------------------------------
+
+bool manager::request_resync(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return false;
+
+	if (m->m_local == 1)
+	{
+		machine.popmessage("The host has nobody to resync from");
+		return true;
+	}
+	if (m->m_resync_wanted)
+		return true;            // already asking
+
+	m->m_blob.clear();
+	m->m_resync_id = 0;         // 0 asks the host to start a fresh transfer
+	m->m_resync_wanted = true;
+	m->m_resync_nag = 0;
+	m->send_resync_req();
+	machine.popmessage("Resync requested from the host...");
+	return true;
+}
+
+
+void manager::send_resync_req()
+{
+	if (!m_link)
+		return;
+
+	resync_req_payload req;
+	req.id = m_resync_id;
+	std::memset(req.bitmap, 0, sizeof(req.bitmap));
+
+	// One message does both jobs: a fresh ask carries no bitmap at all, a
+	// follow-up carries exactly the chunks still missing and no more.
+	if (m_resync_id == 0)
+	{
+		req.want = 0;
+		req.bitmap_bytes = 0;
+	}
+	else
+	{
+		req.want = u16(m_blob.missing(req.bitmap));
+		req.bitmap_bytes = u16(resync_bitmap_bytes(m_blob.chunks()));
+	}
+
+	u8 buf[MAX_DATAGRAM];
+	const size_t len = build_resync_req(buf, sizeof(buf), 0, req);
+	if (len != 0)
+		m_link->send(buf, len);
+}
+
+
+void manager::service_resync()
+{
+	if (m_req_pending)
+	{
+		m_req_pending = false;
+		serve_resync(m_req);
+	}
+}
+
+
+//-------------------------------------------------
+//  safe_point - capture and restore, and only here
+//-------------------------------------------------
+
+void manager::safe_point(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return;
+	if (!m->m_capture_pending && !m->m_resync_ready)
+		return;
+
+	// Upstream's own gate, for upstream's own reason: an anonymous timer
+	// still pending can fire and overwrite what was just written.
+	// running_machine::handle_saveload refuses on the same condition.
+	if (!machine.scheduler().can_save())
+	{
+		if (++m->m_unsafe < 600)
+			return;
+
+		m->m_unsafe = 0;
+		m->m_capture_pending = false;
+		m->m_resync_ready = false;
+		m->m_resync_wanted = false;
+		m->m_blob.clear();
+		osd_printf_info("netplay: resync abandoned, anonymous timers never cleared\n");
+		machine.popmessage("Resync failed: the machine never reached a safe point");
+		return;
+	}
+
+	m->m_unsafe = 0;
+
+	if (m->m_capture_pending)
+	{
+		m->m_capture_pending = false;
+		m->do_capture();
+	}
+
+	if (m->m_resync_ready)
+	{
+		m->m_resync_ready = false;
+		m->apply_resync();
+	}
+}
+
+
+void manager::serve_resync(const resync_req_payload &req)
+{
+	// The host alone answers these. A guest receiving one is seeing a relay
+	// of somebody else's ask.
+	if (m_local != 1)
+		return;
+
+	// A fresh ask cannot be answered from here: the snapshot has to be
+	// taken at a scheduler-safe point, so it is only armed. The host does
+	// NOT pause - it carries on playing while the blob goes out.
+	if (req.id == 0)
+	{
+		m_capture_pending = true;
+		return;
+	}
+
+	if ((req.id != m_resync_id) || !m_resync_serving)
+		return;                 // a stale attempt
+
+	// A follow-up names the chunks still missing from a blob already held.
+	m_send_queue.clear();
+	for (unsigned i = 0; i < m_blob.chunks(); i++)
+	{
+		if ((req.bitmap[i / 8] & (1u << (i % 8))) != 0)
+			m_send_queue.push_back(i);
+	}
+}
+
+
+void manager::do_capture()
+{
+	if (!m_blob.capture(m_machine))
+	{
+		osd_printf_info("netplay: resync refused, state too large\n");
+		m_machine.popmessage("Resync refused: this driver state is too large");
+		return;
+	}
+
+	m_resync_id++;
+	if (m_resync_id == 0)
+		m_resync_id = 1;
+
+	// m_frame is the NEXT frame to be injected: the hook for the frame
+	// now being emulated has already run and advanced it. The guest sets
+	// its counter to exactly this and injects the same frame next, from a
+	// machine sitting mid-frame in precisely the same place.
+	m_resync_frame = m_frame;
+	m_resync_serving = true;
+	m_resyncs++;
+
+	m_send_queue.clear();
+	for (unsigned i = 0; i < m_blob.chunks(); i++)
+		m_send_queue.push_back(i);
+
+	osd_printf_info("netplay: serving resync %u at frame %u, %d KB raw -> %d KB in %d chunks\n",
+			unsigned(m_resync_id), unsigned(m_resync_frame),
+			int(m_blob.raw_size() / 1024), int(m_blob.size() / 1024),
+			int(m_blob.chunks()));
+}
+
+
+void manager::pump_resync_send()
+{
+	// PACED, NOT BURSTED. Handing thousands of datagrams to the socket in
+	// one call overruns its buffer and most are dropped before anyone reads
+	// them - which then shows up as a transfer that never completes. A fixed
+	// number per frame keeps it inside what the link can carry and lets the
+	// game keep running while it goes out.
+	if (m_send_queue.empty() || !m_link || !m_resync_serving)
+		return;
+
+	resync_payload p;
+	p.id = m_resync_id;
+	p.total = u32(m_blob.size());
+	p.chunks = u16(m_blob.chunks());
+
+	unsigned sent = 0;
+	while (!m_send_queue.empty() && (sent < RESYNC_CHUNKS_PER_FRAME))
+	{
+		const unsigned i = m_send_queue.front();
+		m_send_queue.pop_front();
+
+		if (i >= m_blob.chunks())
+			continue;
+
+		const size_t off = size_t(i) * RESYNC_CHUNK;
+		const size_t left = m_blob.size() - off;
+		const size_t bytes = (left < RESYNC_CHUNK) ? left : RESYNC_CHUNK;
+
+		p.index = u16(i);
+		u8 buf[MAX_DATAGRAM];
+		const size_t len = build_resync(buf, sizeof(buf), 0, m_resync_frame,
+				p, m_blob.data() + off, bytes);
+		if (len != 0)
+			m_link->send(buf, len);
+		sent++;
+	}
+}
+
+
+void manager::take_resync_chunk(frame_t state_frame, const resync_payload &p,
+		const u8 *chunk, size_t chunk_len)
+{
+	if (!m_resync_wanted)
+		return;
+
+	if (m_resync_id != p.id)
+	{
+		// First chunk of a new transfer, or the host restarted one.
+		m_resync_id = p.id;
+		m_blob.begin_receive(p.id, state_frame, p.total, p.chunks);
+	}
+
+	m_blob.add_chunk(p.index, chunk, chunk_len);
+
+	if (m_blob.complete())
+		m_resync_ready = true;
+}
+
+
+void manager::apply_resync()
+{
+	const frame_t target = m_frame;
+	const frame_t from = m_blob.frame();
+
+	// The state is older than the ring can still account for, so the words
+	// needed to replay forward are gone. Asking again is the only option.
+	if ((target < from) || ((target - from) >= (RING - 8)))
+	{
+		osd_printf_info("netplay: resync state for frame %u is unusable at frame %u\n",
+				unsigned(from), unsigned(target));
+		m_machine.popmessage("Resync failed: state arrived too late");
+		m_resync_wanted = false;
+		m_blob.clear();
+		return;
+	}
+
+	if (!m_blob.restore(m_machine))
+	{
+		m_machine.popmessage("Resync failed: the state did not fit this machine");
+		m_resync_wanted = false;
+		m_blob.clear();
+		return;
+	}
+
+	// Rewind the frame counter to the state's frame and replay forward
+	// through input that is already in the ring. The pending local word is
+	// dropped: it belongs to a frame that is about to be re-run from
+	// already-published input.
+	//
+	// m_frame = from, where from is the frame the HOST had yet to inject
+	// when it snapshotted. The blob carries the machine mid-frame, exactly
+	// where the host was, so the next injection here is the same frame the
+	// host injected next. Both sides agree on that only because capture
+	// and restore both happen at a scheduler-safe point.
+	m_frame = from;
+	m_pending = 0;
+	m_echo = 0;
+	m_replaying = true;
+	m_replay_until = target;
+	m_catchup = true;
+	m_resync_wanted = false;
+	m_blob.clear();
+
+	// Unthrottled, or the gap never closes: running at 60 Hz while the host
+	// also runs at 60 Hz leaves the guest permanently behind, and the host
+	// then starves on guest input. Cleared when the stream is caught.
+	m_machine.video().set_fastforward(true);
+
+	osd_printf_info("netplay: resync applied, replaying %u..%u\n",
+			unsigned(from), unsigned(target));
+	m_machine.popmessage("Resynced - catching up %d frames",
+			int(target - from));
+}
+
+//-------------------------------------------------
 //  wait_for_input - the lockstep stall
 //-------------------------------------------------
 
@@ -730,8 +1087,36 @@ void manager::wait_for_input()
 		return;
 	}
 
+	// HAVING TO WAIT IS THE DEFINITION OF CAUGHT UP. While behind, the ring
+	// always has the next frame ready and the guest burns through it
+	// unthrottled; the first frame it has to wait for means it has reached
+	// the live stream and normal pacing should resume.
+	if (m_catchup && !m_net_paused && !m_replaying)
+	{
+		m_catchup = false;
+		m_machine.video().set_fastforward(false);
+		osd_printf_info("netplay: caught up at frame %u\n", unsigned(m_frame));
+		m_machine.popmessage("Back in sync");
+	}
+
 	if (!m_net_paused)
 		m_stalls++;
+
+	// WAITING ON OUR OWN WORD IS NEVER RECOVERABLE. Nothing on the link
+	// can supply it - only publishing puts it in the ring - so this is a
+	// hole in our own stream and the session is over. It cost one silent
+	// hang already; say so rather than sit there looking like packet loss.
+	if (!gated && !m_net_paused && !m_own_hole)
+	{
+		const slot &s = at(m_frame);
+		if ((s.stamp != m_frame) || ((s.have & slot_bit(m_local)) == 0))
+		{
+			m_own_hole = true;
+			osd_printf_info("netplay: BUG - waiting on our own word for frame %u, published through %u\n",
+					unsigned(m_frame), unsigned(m_published));
+			m_machine.popmessage("Netplay bug: no local input for frame %d - this will not recover", int(m_frame));
+		}
+	}
 
 	// PAUSE AROUND THE WAIT, and the reason is determinism, not tidiness.
 	//
@@ -881,6 +1266,41 @@ const char *manager::missing_text()
 }
 
 
+void manager::test_corrupt()
+{
+	// Scribble on the largest registered entry, which on any of these
+	// drivers is work RAM. Enough bytes that the state hash cannot miss it
+	// and the game visibly misbehaves.
+	save_manager &save = m_machine.save();
+	const int count = save.registration_count();
+
+	void *biggest = nullptr;
+	size_t biggest_bytes = 0;
+	for (int i = 0; i < count; i++)
+	{
+		void *base = nullptr;
+		u32 valsize = 0, valcount = 0;
+		if (save.indexed_item(i, base, valsize, valcount) == nullptr)
+			continue;
+		if (base == nullptr)
+			continue;
+		const size_t bytes = size_t(valsize) * size_t(valcount);
+		if (bytes > biggest_bytes)
+		{
+			biggest = base;
+			biggest_bytes = bytes;
+		}
+	}
+
+	if ((biggest == nullptr) || (biggest_bytes < 256))
+		return;
+
+	std::memset(biggest, 0x5a, 256);
+	osd_printf_info("netplay: TEST corrupted 256 bytes at frame %u\n",
+			unsigned(m_frame));
+}
+
+
 void manager::test_pause_tick()
 {
 	// DIAGNOSTIC: a real session is resumed by a keypress, which the UI can
@@ -912,7 +1332,7 @@ void manager::check_selftest()
 	if (want != got)
 	{
 		if (m_selftest_fail == 0)
-			osd_printf_error("netplay: SELFTEST frame %u want %08x got %08x\n",
+			osd_printf_info("netplay: SELFTEST frame %u want %08x got %08x\n",
 					unsigned(m_frame), want, got);
 		m_selftest_fail++;
 	}
@@ -935,6 +1355,15 @@ void manager::frame_begin(running_machine &machine)
 	// DIAGNOSTIC: stand in for a keypress. See the header.
 	if ((m->m_test_pause_at != 0) && (m->m_frame == m->m_test_pause_at))
 		ui_request(machine, UICMD_PAUSE_TOGGLE);
+	if ((m->m_test_corrupt_at != 0) && (m->m_frame == m->m_test_corrupt_at))
+		m->test_corrupt();
+	if ((m->m_test_resync_at != 0) && (m->m_frame == m->m_test_resync_at))
+		request_resync(machine);
+
+	// Before wait_for_input, because applying a resync moves m_frame and
+	// the wait has to be for the frame we end up on.
+	m->poll_link();
+	m->service_resync();
 
 	m->wait_for_input();
 }
@@ -944,6 +1373,12 @@ void manager::port_capture(ioport_port &port)
 {
 	manager *const m = active();
 	if (m == nullptr)
+		return;
+
+	// Not while replaying. Those frames were captured and published once
+	// already; reading the live controls now would invent input for a frame
+	// the other peer has long since run with something else.
+	if (m->m_replaying)
 		return;
 
 	m->m_map.capture_port(port, m->m_pending);
@@ -982,13 +1417,56 @@ void manager::frame_end(running_machine &machine)
 						m->at(m->m_frame).words[m->m_local - 1]),
 				m->at(m->m_frame).have);
 
-	const frame_t target = m->m_frame + frame_t(m->m_delay);
+	if (m->m_replaying && (m->m_frame >= m->m_replay_until))
+	{
+		m->m_replaying = false;
+		osd_printf_info("netplay: replay complete at frame %u\n",
+				unsigned(m->m_frame));
+	}
 
-	// The local word is known the moment it is captured and never travels to
-	// reach us, so it goes straight into the ring. Only other peers' words
-	// come off the link.
-	m->publish(target, m->m_local, m->m_pending);
-	m->batch_add(m->m_pending, target);
+	// ONE RULE DECIDES WHAT GOES ON THE WIRE: every frame after
+	// m_published, up to m_frame + delay, and nothing else. It has to hold
+	// both ways at once, and the two failures are not symmetric.
+	//
+	// Re-publishing a frame overwrites a word the host has already
+	// consumed, so a replay must stay silent - and it does, with no test
+	// for it: while replaying, target is still behind m_published and the
+	// loop does not run.
+	//
+	// A HOLE IN THE STREAM STALLS EVERY PEER FOREVER. One frame with no
+	// word from one peer cannot be skipped and nothing will ever produce
+	// it. Worse, a peer can end up waiting on its OWN word, which only
+	// publishing puts in the ring - so the wait can never end. The frame
+	// a replay finishes on is exactly where that hole opens: the counter
+	// has moved while the stream has not.
+	//
+	// AT DELAY 1 THERE IS NO SLACK TO ABSORB IT. With a larger delay the
+	// frames already published cover the gap and it closes a frame later;
+	// at delay 1 the next frame_begin blocks before any later frame_end
+	// can fill anything. So this cannot be a separate repair step that
+	// runs afterwards - it has to be the same rule that does the normal
+	// publish. Filling repeats an input, a visible artifact and nothing
+	// worse.
+	const frame_t target = m->m_frame + frame_t(m->m_delay);
+	if (m->m_published < target)
+	{
+		const frame_t first = m->m_published + 1;
+
+		// The local word is known the moment it is captured and never
+		// travels to reach us, so it goes straight into the ring. Only
+		// other peers' words come off the link.
+		for (frame_t f = first; f <= target; f++)
+		{
+			m->publish(f, m->m_local, m->m_pending);
+			m->batch_add(m->m_pending, f);
+		}
+
+		if (first != target)
+			osd_printf_info("netplay: filled stream gap %u..%u at frame %u\n",
+					unsigned(first), unsigned(target), unsigned(m->m_frame));
+
+		m->m_published = target;
+	}
 
 	if (m->m_link)
 		m->m_link->tick();
@@ -999,8 +1477,28 @@ void manager::frame_end(running_machine &machine)
 	m->m_frame++;
 
 	// ~2 Hz while running. Often enough to watch, cheap enough to ignore.
+	m->pump_resync_send();
+
 	if ((m->m_frame % 30) == 0)
 		m->write_status();
+
+	// Chase missing chunks about twice a second. A datagram link drops
+	// things, and without this a single lost chunk means a resync that never
+	// completes and never says why.
+	if (m->m_resync_wanted && ((m->m_frame % 30) == 15))
+	{
+		m->m_resync_nag++;
+		if (m->m_resync_nag > 20)
+		{
+			m->m_resync_wanted = false;
+			m->m_blob.clear();
+			m->m_machine.popmessage("Resync gave up - no answer from the host");
+		}
+		else
+		{
+			m->send_resync_req();
+		}
+	}
 }
 
 
@@ -1100,7 +1598,7 @@ void manager::on_exit()
 			osd_printf_info("netplay: selftest PASS over %u frame(s)\n",
 					unsigned(m_frame));
 		else
-			osd_printf_error("netplay: selftest FAIL on %llu of %u frame(s)\n",
+			osd_printf_info("netplay: selftest FAIL on %llu of %u frame(s)\n",
 					static_cast<unsigned long long>(m_selftest_fail),
 					unsigned(m_frame));
 	}

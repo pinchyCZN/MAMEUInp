@@ -198,6 +198,8 @@ files {
 	MAME_DIR .. "src/emu/netplay/netplay_manager.h",
 	MAME_DIR .. "src/emu/netplay/netplay_packet.cpp",
 	MAME_DIR .. "src/emu/netplay/netplay_packet.h",
+	MAME_DIR .. "src/emu/netplay/netplay_resync.cpp",
+	MAME_DIR .. "src/emu/netplay/netplay_resync.h",
 	MAME_DIR .. "src/emu/netplay/netplay_transport.cpp",
 	MAME_DIR .. "src/emu/netplay/netplay_transport.h",
 	MAME_DIR .. "src/emu/netplay/netplay_mix.h",

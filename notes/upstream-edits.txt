@@ -230,8 +230,31 @@ Table of Contents
    |                              | sources explicitly and does    |
    |                              | not glob. [verified]           |
    +------------------------------+--------------------------------+
-   | src/emu/ioport.cpp           | state-hash call at the end of  |
+   | src/emu/ioport.cpp           | four netplay hooks plus the    |
+   |                              | state-hash call, all in        |
    |                              | ioport_manager::frame_update   |
+   |                              | and ioport_port::read          |
+   +------------------------------+--------------------------------+
+   | src/emu/machine.cpp          | netplay::manager::safe_point   |
+   |                              | beside handle_saveload in      |
+   |                              | running_machine::run. Resync   |
+   |                              | capture and restore MUST       |
+   |                              | happen there - determinism.txt |
+   |                              | 6.1. The second call site is   |
+   |                              | EMSCRIPTEN-only and is left    |
+   |                              | alone.                         |
+   +------------------------------+--------------------------------+
+   | src/emu/video.cpp            | netplay::manager::idle_update, |
+   |                              | so a held session still pumps  |
+   |                              | the OSD                        |
+   +------------------------------+--------------------------------+
+   | src/frontend/mame/ui/ui.cpp  | netplay_locks_ui gate on the   |
+   |                              | keys that would desync:        |
+   |                              | pause, fast-forward, reset,    |
+   |                              | F4, tilt, save/load state      |
+   +------------------------------+--------------------------------+
+   | src/osd/windows/window.cpp   | window title carries           |
+   |                              | NETPLAY_TAG                    |
    +------------------------------+--------------------------------+
    | src/emu/emuopts.cpp / .h     | -netplay_hashlog and           |
    |                              | -netplay_hashinterval. Also    |

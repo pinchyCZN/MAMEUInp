@@ -11,6 +11,7 @@
 #include "emu.h"
 #include "emuopts.h"                  // emu_options is not complete via emu.h
 #include "netplay/netplay_hash.h"
+#include "netplay/netplay_manager.h"
 #include "netplay/netplay_inputmap.h"
 #include "netplay/netplay_mix.h"
 
@@ -307,7 +308,16 @@ void netplay_state_hash::dump_entries(u64 frame)
 
 void netplay_state_hash::on_frame()
 {
-	const u64 frame = m_frame++;
+	// STAMPED WITH THE NETPLAY FRAME, NOT A LOCAL COUNT. A private counter
+	// only counts calls, so after a resync rewind replays N frames the log
+	// is N rows out of step with every other peer's - and comparing two
+	// such logs then reports a desync for a machine that matches exactly.
+	// A replay legitimately writes a frame's row twice; the later row is
+	// the one that stands.
+	u64 frame;
+	if (!netplay::manager::stamp_frame(m_machine, frame))
+		frame = m_frame;
+	m_frame++;
 
 	// before the interval early-out: the dump must not depend on it
 	if ((m_entry_log != nullptr) && want_entries(frame))

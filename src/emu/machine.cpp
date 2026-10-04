@@ -83,6 +83,7 @@
 #include "image.h"
 #include "network.h"
 #include "romload.h"
+#include "netplay/netplay_manager.h"   // NETPLAY
 #include "ui/uimain.h"
 #include <time.h>
 #include <rapidjson/writer.h>
@@ -360,6 +361,15 @@ int running_machine::run(bool quiet)
 			// handle save/load
 			if (m_saveload_schedule != saveload_schedule::NONE)
 				handle_saveload();
+
+			// NETPLAY: a resync captures and restores machine state HERE and
+			// nowhere else, beside handle_saveload for the same reason it is
+			// here: outside m_scheduler.timeslice(), with no device part way
+			// through execution. Doing it from the input hook instead leaves
+			// the scheduler running a device whose PC and local time were
+			// rewritten under it, and the next frame diverges even though
+			// every saved entry matched. No-ops without a netplay session.
+			netplay::manager::safe_point(*this);
 
 			g_profiler.stop();
 		}

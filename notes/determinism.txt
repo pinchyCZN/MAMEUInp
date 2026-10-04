@@ -268,6 +268,85 @@ Table of Contents
      its own harness. tools/netplay_roundtrip.lua refuses a gap that is
      not a whole number of INPUT_PERIOD for this reason.
 
+6.1.  A savestate may only be taken or applied at the safe point
+
+   running_machine::run calls handle_saveload only after
+   m_scheduler.timeslice() returns, never inside it, and refuses
+   even then while m_scheduler.can_save() is false. Upstream states
+   the reason in handle_saveload: pending anonymous timers "might
+   overwrite data we have loaded". [verified, machine.cpp
+   running_machine::run and handle_saveload]
+
+   This binds our resync, because the netplay hooks are in
+   ioport_manager::frame_update, which runs from INSIDE a timeslice.
+   Restoring there writes a device's registered state - for a 68000,
+   m_pc, m_ppc, m_pref_addr and m_localtime - while the scheduler is
+   part way through executing that same device from values it holds
+   outside the save set. The restore itself is perfect and the next
+   frame still diverges:
+
+   +----------------+-------------------+--------------------------+
+   | frame          | entries differing | restore point            |
+   +================+===================+==========================+
+   | resync frame   | 0 of 931          | inside the timeslice     |
+   +----------------+-------------------+--------------------------+
+   | next frame     | 46 of 931         | inside the timeslice     |
+   +----------------+-------------------+--------------------------+
+   | resync frame   | 0 of 931          | at the safe point        |
+   +----------------+-------------------+--------------------------+
+   | next 1289      | 0 of 931          | at the safe point        |
+   +----------------+-------------------+--------------------------+
+
+   The 46 are the maincpu registers and its local time, and nothing
+   in work RAM. [verified, NETPLAY_ENTRYLOG per-entry dump on dino]
+
+   THIS IS THE TRAP: a whole-state hash taken at the restore frame
+   reports a perfect match, because every registered entry IS
+   perfect. What is wrong is unregistered scheduler state, which no
+   hash over save entries can see. The symptom appears one frame
+   later and looks like a transport bug.
+
+   So the capture and the apply both go through
+   netplay::manager::safe_point, called from running_machine::run.
+   At any safe point the netplay frame counter is the NEXT frame to
+   be injected, which is what the two peers agree on - the blob
+   carries the machine mid-frame and the guest resumes injecting
+   from the same place.
+
+6.2.  Round-trip is per driver, and the driver flag does not predict it
+
+   MACHINE_SUPPORTS_SAVE is the driver's own claim and only a
+   warning in MAME. Measured with tools/netplay_roundtrip.lua, it is
+   wrong in both directions:
+
+   +----------+----------+-----------+-------------+
+   | Driver   | raw      | save flag | round-trips |
+   +==========+==========+===========+=============+
+   | dino     |  0.43 MB | yes       | yes         |
+   +----------+----------+-----------+-------------+
+   | kov2     |  0.66 MB | yes       | yes         |
+   +----------+----------+-----------+-------------+
+   | mslug5   |  0.41 MB | yes       | NO          |
+   +----------+----------+-----------+-------------+
+   | rsgun    |  6.50 MB | no        | NO          |
+   +----------+----------+-----------+-------------+
+   | brvblade |  7.80 MB | no        | NO          |
+   +----------+----------+-----------+-------------+
+   | bublbob2o|  0.43 MB | no        | NO          |
+   +----------+----------+-----------+-------------+
+
+   Consequence for resync sizing: every multi-megabyte state in
+   protocol.txt 2.4 belongs to a driver that cannot restore its own
+   state, so there is no driver available here on which a
+   multi-megabyte resync can be tested at all. A size limit would
+   therefore be refusing transfers for a reason that has never been
+   measured. The gate that matters is per-driver round-trip, not
+   bytes.
+
+   kov2 round-trips and still desyncs under netplay at frame 9 with
+   no resync involved, so round-trip is necessary and not
+   sufficient. Cause not yet established. [verified]
+
 7.  Open questions
 
    o -numprocessors and the threaded rasterizers. MAME dispatches some
