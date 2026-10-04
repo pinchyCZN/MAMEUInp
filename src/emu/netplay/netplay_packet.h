@@ -239,6 +239,20 @@ constexpr size_t UICMD_BYTES = HEADER_BYTES + 4;
 size_t build_uicmd(u8 *buf, size_t cap, u16 session, frame_t effective,
 		u8 cmd);
 bool parse_uicmd(const u8 *buf, size_t len, frame_t &effective, u8 &cmd);
+
+// CHAT. The sender travels in the header's player_mask, so there is no
+// sender field. base_frame is informational: chat changes no emulated
+// state, so unlike UICMD it is not frame-gated and a lost line is lost.
+//
+// parse_chat GUARANTEES out is NUL-terminated and holds only printable
+// ASCII. It is the one message whose content comes from a person, so it
+// is the one that must not be trusted: a control character here would
+// reach a text renderer, and a missing terminator would read past the
+// buffer. Sanitising on receive rather than trusting the sender is the
+// whole job. out must have room for CHAT_MAX_TEXT + 1.
+size_t build_chat(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, const char *text);
+bool parse_chat(const u8 *buf, size_t len, player_t &from, char *out);
 const char *uicmd_text(u8 cmd);
 
 // ---- resync ----
@@ -269,6 +283,11 @@ struct resync_payload
 // Variable length: 8 fixed bytes plus however many bitmap bytes the
 // chunk count needs. A 13-chunk transfer carries 2, not 1024.
 constexpr size_t RESYNC_REQ_FIXED = 8;
+
+// Chat text, bytes. Nothing needs it this short - the datagram has room
+// for nine times as much - but a cap has to exist somewhere and a line
+// nobody can read is not worth carrying.
+constexpr size_t CHAT_MAX_TEXT = 128;
 constexpr size_t RESYNC_HEAD_BYTES = HEADER_BYTES + 12;
 
 size_t build_resync_req(u8 *buf, size_t cap, u16 session,

@@ -879,7 +879,8 @@ Table of Contents
    +------+---------+-------------+--------------------------------------+
    | 0x09 | STALL   | both        | I am not ready for frame N           |
    +------+---------+-------------+--------------------------------------+
-   | 0x0a | CHAT    | both        | its own type, never input bits (1.5) |
+   | 0x0a | CHAT    | both        | typed line, 3.9. Its own type, never |
+   |      |         |             | input bits (1.5)                     |
    +------+---------+-------------+--------------------------------------+
    | 0x0b | BYE     | both        | leaving, with a reason               |
    +------+---------+-------------+--------------------------------------+
@@ -1020,6 +1021,52 @@ Table of Contents
    diverges at the corruption, converges at the resync frame, and
    holds bit-identical for the rest of the run - 1289 frames and 919
    frames at two different resync points. [verified]
+
+3.9.  CHAT
+
+       header            12 bytes, 3.2. player_mask is the SENDER
+       len                1 byte, 1 to 128
+       text              len bytes, printable ASCII
+
+   The sender travels in the header's player_mask, so there is no
+   sender field. A mask with no bits set, or more than one, names
+   nobody and the line is dropped.
+
+   NO FRAME GATE AND NO RETRANSMISSION, which is what separates this
+   from UICMD. A pause changes emulated state, so it carries the frame
+   it takes effect on and every peer must apply it on that frame. Chat
+   changes nothing, so a lost line costs a sentence and desyncs
+   nobody. base_frame is carried but informational.
+
+   A sender shows its own line immediately rather than waiting for the
+   relay to echo it, so the text survives a dropped datagram at the
+   sender's end, and the receive path ignores a line attributed to
+   itself so nothing appears twice.
+
+   THIS IS THE ONE MESSAGE WHOSE CONTENT COMES FROM A PERSON, and so
+   the one that must not be trusted. parse_chat copies only bytes in
+   0x20..0x7e and always terminates: a control character would reach a
+   text renderer, and a missing terminator would read past the buffer.
+   Validating on receive rather than trusting a well-behaved sender is
+   the whole of it. The length is checked against the datagram length
+   too, so a short packet cannot be read past its end.
+
+3.10.  Typing suppresses local input, and cannot do so instantly
+
+   While a line is being composed, nothing is captured from the
+   controls and a neutral word is published, so a player does not fire
+   or walk while typing. Returning early from the UI handler is NOT
+   enough on its own: the emulated machine reads input through ioport,
+   not through the UI, so the suppression belongs in the capture hook.
+
+   It takes effect m_delay frames late and that is not fixable. The
+   words for those frames are already published and in flight, and
+   rewriting a frame another peer may already have run would trade one
+   stray shot for a desync. At delay 1 it is one frame.
+
+   Measured on dino, peer B composing for 119 frames while peer A
+   played: A published a non-neutral word on 63 of those frames, B on
+   0 of 119, and the two stayed bit-identical throughout.  [verified]
 
 4.  Handshake
 

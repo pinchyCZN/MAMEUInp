@@ -251,7 +251,10 @@ Table of Contents
    | src/frontend/mame/ui/ui.cpp  | netplay_locks_ui gate on the   |
    |                              | keys that would desync:        |
    |                              | pause, fast-forward, reset,    |
-   |                              | F4, tilt, save/load state      |
+   |                              | F4, tilt, save/load state.     |
+   |                              | Ctrl+Shift+R resync. Chat keys |
+   |                              | in handler_ingame and the chat |
+   |                              | overlay in update_and_render   |
    +------------------------------+--------------------------------+
    | src/osd/windows/window.cpp   | window title carries           |
    |                              | NETPLAY_TAG                    |

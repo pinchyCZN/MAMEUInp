@@ -297,6 +297,85 @@ size_t build_uicmd(u8 *buf, size_t cap, u16 session, frame_t effective, u8 cmd)
 }
 
 
+size_t build_chat(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, const char *text)
+{
+	if (text == nullptr)
+		return 0;
+
+	// Only printable ASCII goes on the wire, so a receiver that trusted
+	// us would still be safe. It does not trust us - see parse_chat.
+	char clean[CHAT_MAX_TEXT];
+	size_t n = 0;
+	for (const char *q = text; (*q != 0) && (n < sizeof(clean)); q++)
+	{
+		const unsigned char c = (unsigned char)(*q);
+		if ((c >= 0x20) && (c < 0x7f))
+			clean[n++] = char(c);
+	}
+	if (n == 0)
+		return 0;
+
+	const size_t len = control_head(buf, cap, MSG_CHAT, session, frame,
+			1 + n);
+	if (len == 0)
+		return 0;
+
+	// control_head zeroes bytes 8..11; the sender goes in player_mask.
+	put_u8(buf + 9, slot_bit(from));
+	put_u8(buf + HEADER_BYTES, u8(n));
+	std::memcpy(buf + HEADER_BYTES + 1, clean, n);
+	return len;
+}
+
+
+bool parse_chat(const u8 *buf, size_t len, player_t &from, char *out)
+{
+	if (out == nullptr)
+		return false;
+	out[0] = 0;
+
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_CHAT))
+		return false;
+	if (len < (HEADER_BYTES + 1))
+		return false;
+
+	const size_t n = get_u8(buf + HEADER_BYTES);
+	if ((n == 0) || (n > CHAT_MAX_TEXT))
+		return false;
+	if (len != (HEADER_BYTES + 1 + n))
+		return false;
+
+	// Which player the mask names. A mask with no bits, or more than one,
+	// is not a sender we can attribute, so the line is dropped.
+	from = 0;
+	for (player_t pl = 1; pl <= MAX_PLAYERS; pl++)
+	{
+		if (head.player_mask == slot_bit(pl))
+		{
+			from = pl;
+			break;
+		}
+	}
+	if (from == 0)
+		return false;
+
+	// Copy only printable ASCII, and always terminate. Everything else
+	// is discarded rather than substituted: a line that arrives mangled
+	// is better short than carrying a control code into a renderer.
+	size_t w = 0;
+	for (size_t i = 0; i < n; i++)
+	{
+		const unsigned char c = buf[HEADER_BYTES + 1 + i];
+		if ((c >= 0x20) && (c < 0x7f))
+			out[w++] = char(c);
+	}
+	out[w] = 0;
+	return (w != 0);
+}
+
+
 bool parse_uicmd(const u8 *buf, size_t len, frame_t &effective, u8 &cmd)
 {
 	packet_header head;

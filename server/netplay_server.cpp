@@ -478,6 +478,7 @@ void relay::run()
 		case MSG_UICMD:
 		case MSG_RESYNC_REQ:
 		case MSG_RESYNC:
+		case MSG_CHAT:
 			// All forwarded verbatim. A UI command carries the frame it takes
 			// effect on and a resync chunk carries its own index and id, so the
 			// server has no more reason to understand any of them than it does
@@ -505,8 +506,8 @@ void relay::run()
 			break;
 
 		default:
-			// HASH, DESYNC, RESYNC, STALL and CHAT are relayed like input
-			// once they mean something; for now they are counted. [open]
+			// HASH, DESYNC and STALL are relayed like input once they mean
+			// something; for now they are counted. [open]
 			m_malformed++;
 			break;
 		}

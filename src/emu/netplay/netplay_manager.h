@@ -118,6 +118,42 @@ public:
 	// to ask (no session, or this peer IS the host).
 	static bool request_resync(running_machine &machine);
 
+	// ---- chat ----
+	//
+	// The manager owns the text and the timing; the frontend owns the
+	// drawing. src/emu must not include src/frontend, and draw_text_full
+	// is a mame_ui_manager method, so the split is not a preference.
+
+	// Lines held, and how long one stays up. Six lines is what fits the
+	// corner without covering the playfield.
+	static constexpr unsigned CHAT_LINES = 6;
+	static constexpr unsigned CHAT_SECONDS = 12;
+	static constexpr unsigned CHAT_FADE_SECONDS = 2;
+
+	struct chat_line
+	{
+		const char *text;
+		u8          alpha;      // 255 solid, falling to 0 as it expires
+	};
+
+	// True while a line is being typed. The caller must then route every
+	// keystroke to chat_keys and act on nothing else.
+	static bool chat_composing(running_machine &machine);
+
+	// Opens the compose line. False when no session is running, so the
+	// key keeps its normal meaning outside netplay.
+	static bool chat_begin(running_machine &machine);
+
+	// Consumes typed characters, Enter, Escape and Backspace.
+	static void chat_keys(running_machine &machine);
+
+	// Oldest first. Returns how many were written, at most max.
+	static unsigned chat_view(running_machine &machine, chat_line *out,
+			unsigned max);
+
+	// The line being typed, or nullptr when not composing.
+	static const char *chat_prompt(running_machine &machine);
+
 	// public only because std::unique_ptr holds one; construction stays
 	// private so a session can only come from open_session()
 	~manager();
@@ -303,6 +339,30 @@ private:
 	// See frame_end - this is what makes a hole in the stream impossible.
 	frame_t                     m_published;
 	bool                        m_own_hole;     // reported once
+
+	// Chat. osd_ticks drives the expiry, which is safe only because none
+	// of this reaches emulated state - see determinism.txt 2.2 for the
+	// one door wall-clock time is allowed through, and this is not it.
+	struct chat_entry
+	{
+		char        text[CHAT_MAX_TEXT + 24];   // room for the "P1: " prefix
+		osd_ticks_t shown;
+	};
+	chat_entry                  m_chat[CHAT_LINES];
+	unsigned                    m_chat_n;       // total ever added
+	bool                        m_chat_open;
+	char                        m_chat_edit[CHAT_MAX_TEXT + 1];
+	unsigned                    m_chat_len;
+	// DIAGNOSTIC. Opens the compose box at a frame and sends it HOLD
+	// frames later, so a test can check that nothing is published while
+	// it is open. See the header comment on the other NETPLAY_TEST vars.
+	frame_t                     m_test_chat_at;
+	frame_t                     m_test_chat_hold;
+	char                        m_chat_prompt[CHAT_MAX_TEXT + 8];
+
+	void chat_push(player_t from, const char *text);
+	void chat_send();
+
 
 	// Replaying already-known input to close the gap. Capture and publish
 	// are suppressed while this is set: those frames were captured and

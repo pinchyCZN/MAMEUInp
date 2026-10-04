@@ -423,6 +423,47 @@ void mame_ui_manager::update_and_render(render_container &container)
 	else
 		m_popup_text_end = 0;
 
+	// NETPLAY: chat, snug against the lower left. Drawn here rather than
+	// in handler_ingame so it survives a menu being open, and so it sits
+	// beside the popup above instead of fighting it: that one is CENTER
+	// at y=0.9, this one is LEFT anchored to the bottom edge.
+	//
+	// Rows are one line each with wrapping NEVER, so the block height is
+	// just get_line_height() per row and the bottom edge can be anchored
+	// without a measuring pass.
+	if (machine().phase() >= machine_phase::RESET)
+	{
+		netplay::manager::chat_line chat[netplay::manager::CHAT_LINES];
+		unsigned const rows = netplay::manager::chat_view(machine(), chat,
+				netplay::manager::CHAT_LINES);
+		char const *const prompt = netplay::manager::chat_prompt(machine());
+
+		if ((rows != 0) || (prompt != nullptr))
+		{
+			float const lh = get_line_height();
+			float const x = 0.01f;
+			unsigned const total = rows + ((prompt != nullptr) ? 1 : 0);
+			float y = 1.0f - (lh * float(total)) - 0.004f;
+
+			for (unsigned i = 0; i < rows; i++)
+			{
+				// The fade is in the alpha of both colours, so the backing
+				// box fades with the text instead of outliving it.
+				draw_text_full(container, chat[i].text, x, y, 1.0f - (x * 2.0f),
+						ui::text_layout::LEFT, ui::text_layout::NEVER, NORMAL,
+						rgb_t(chat[i].alpha, 0xff, 0xff, 0xff),
+						rgb_t(uint8_t(chat[i].alpha / 2), 0x00, 0x00, 0x00),
+						nullptr, nullptr);
+				y += lh;
+			}
+
+			if (prompt != nullptr)
+				draw_text_full(container, prompt, x, y, 1.0f - (x * 2.0f),
+						ui::text_layout::LEFT, ui::text_layout::NEVER, OPAQUE_,
+						UI_TEXT_COLOR, UI_BACKGROUND_COLOR, nullptr, nullptr);
+		}
+	}
+
 	// display the internal mouse cursor
 	if (machine().options().ui_mouse() && (m_mouse_show || is_menu_active())) //MESSUI - (NEWUI) system pointer always on; MAME pointer always off
 //	if (m_mouse_show || (is_menu_active() && machine().options().ui_mouse()))
@@ -1085,6 +1126,30 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 		machine().popmessage("%s", why);
 		return true;
 	};
+
+	// NETPLAY: chat. Enter opens the line, Enter sends it, Escape
+	// abandons it.
+	//
+	// A raw KEYCODE_ENTER test and NOT IPT_UI_SELECT, which looks like
+	// the right type and is wrong: inpttype.h binds UI_SELECT to Enter
+	// OR joystick button 1, so a player's fire button would open the
+	// chat box mid-match.
+	//
+	// While composing, this consumes the keyboard and returns so no other
+	// UI key acts on a keystroke meant for the message. That does NOT
+	// stop the game seeing the keys - the machine reads input through
+	// ioport, not through this handler - so game input is suppressed
+	// separately, in netplay::manager::port_capture.
+	if (netplay::manager::chat_composing(machine()))
+	{
+		netplay::manager::chat_keys(machine());
+		return 0;
+	}
+	if (machine().input().code_pressed_once(KEYCODE_ENTER)
+			&& netplay::manager::chat_begin(machine()))
+	{
+		return 0;
+	}
 
 	// NETPLAY: Ctrl+Shift+R asks the host for its machine state. A raw key
 	// test rather than an IPT_UI_* type because every function key is

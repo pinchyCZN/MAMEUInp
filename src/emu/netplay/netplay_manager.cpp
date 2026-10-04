@@ -55,11 +55,6 @@ bool env_flag(const char *name)
 	return !unset(std::getenv(name));
 }
 
-u8 slot_bit(player_t p)
-{
-	return u8(1u << (p - 1));
-}
-
 } // anonymous namespace
 
 
@@ -117,6 +112,11 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_unsafe(0)
 	, m_published(0)
 	, m_own_hole(false)
+	, m_chat_n(0)
+	, m_chat_open(false)
+	, m_chat_len(0)
+	, m_test_chat_at(0)
+	, m_test_chat_hold(0)
 	, m_replaying(false)
 	, m_replay_until(0)
 	, m_catchup(false)
@@ -158,6 +158,16 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	// frame and every frame after a resync. m_delay is clamped to 1 or
 	// more before we are constructed.
 	m_published = frame_t(m_delay) - 1;
+
+	for (unsigned i = 0; i < CHAT_LINES; i++)
+	{
+		m_chat[i].text[0] = 0;
+		m_chat[i].shown = 0;
+	}
+	m_chat_edit[0] = 0;
+	m_chat_prompt[0] = 0;
+	m_test_chat_at = frame_t(env_uint("NETPLAY_TEST_CHAT_AT", 0));
+	m_test_chat_hold = frame_t(env_uint("NETPLAY_TEST_CHAT_HOLD", 0));
 
 	machine.add_notifier(MACHINE_NOTIFY_EXIT,
 			machine_notify_delegate(&manager::on_exit, this));
@@ -546,6 +556,17 @@ void manager::poll_link()
 		if (parse_resync(buf, len, sf, rp, rchunk, rlen))
 		{
 			take_resync_chunk(sf, rp, rchunk, rlen);
+			continue;
+		}
+
+		player_t said = 0;
+		char line[CHAT_MAX_TEXT + 1];
+		if (parse_chat(buf, len, said, line))
+		{
+			// Our own line is shown when we send it, not when the relay
+			// hands it back, so it does not appear twice.
+			if (said != m_local)
+				chat_push(said, line);
 			continue;
 		}
 
@@ -1067,6 +1088,176 @@ void manager::apply_resync()
 }
 
 //-------------------------------------------------
+//  chat
+//-------------------------------------------------
+
+void manager::chat_push(player_t from, const char *text)
+{
+	// Oldest falls off the end. m_chat_n only ever counts up, so the
+	// newest line is always at (m_chat_n - 1) % CHAT_LINES.
+	chat_entry &e = m_chat[m_chat_n % CHAT_LINES];
+	m_chat_n++;
+
+	std::snprintf(e.text, sizeof(e.text), "P%d: %s", int(from), text);
+	e.shown = osd_ticks();
+
+	// Logged as well as shown. A line fades off the screen in seconds
+	// and the log is the only record of what was said.
+	osd_printf_info("netplay: chat P%d: %s\n", int(from), text);
+}
+
+
+void manager::chat_send()
+{
+	if ((m_chat_len == 0) || !m_link)
+		return;
+
+	u8 buf[MAX_DATAGRAM];
+	const size_t len = build_chat(buf, sizeof(buf), 0, m_frame,
+			m_local, m_chat_edit);
+	if (len != 0)
+	{
+		m_link->send(buf, len);
+
+		// Shown locally straight away rather than waiting for the relay to
+		// echo it. Chat is not retransmitted, so if the datagram is lost
+		// the sender still sees what they said - and nothing desyncs,
+		// which is the whole reason this message needs no reliability.
+		chat_push(m_local, m_chat_edit);
+	}
+}
+
+
+bool manager::chat_composing(running_machine &machine)
+{
+	manager *const m = active();
+	return (m != nullptr) && (s_owner == &machine) && m->m_chat_open;
+}
+
+
+bool manager::chat_begin(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return false;
+
+	m->m_chat_open = true;
+	m->m_chat_len = 0;
+	m->m_chat_edit[0] = 0;
+	return true;
+}
+
+
+void manager::chat_keys(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine) || !m->m_chat_open)
+		return;
+
+	// Enter sends, Escape abandons. Tested before the characters so a
+	// Return that also arrives as a character cannot be inserted.
+	if (machine.input().code_pressed_once(KEYCODE_ESC))
+	{
+		m->m_chat_open = false;
+		m->m_chat_len = 0;
+		m->m_chat_edit[0] = 0;
+		return;
+	}
+
+	if (machine.input().code_pressed_once(KEYCODE_ENTER)
+			|| machine.input().code_pressed_once(KEYCODE_ENTER_PAD))
+	{
+		m->chat_send();
+		m->m_chat_open = false;
+		m->m_chat_len = 0;
+		m->m_chat_edit[0] = 0;
+		return;
+	}
+
+	if (machine.input().code_pressed_once(KEYCODE_BACKSPACE)
+			&& (m->m_chat_len != 0))
+	{
+		m->m_chat_len--;
+		m->m_chat_edit[m->m_chat_len] = 0;
+	}
+
+	// IME_CHAR is how MAME delivers typed text (menu.cpp does the same
+	// for incremental search). Nothing else consumes these during arcade
+	// play: the only other reader is process_natural_keyboard, gated on
+	// natkeyboard().in_use(), which no arcade driver sets.
+	ui_event ev;
+	while (machine.ui_input().pop_event(&ev))
+	{
+		if (ev.event_type != ui_event::IME_CHAR)
+			continue;
+
+		// ASCII only, which is also all the wire format carries.
+		const char32_t ch = ev.ch;
+		if ((ch < 0x20) || (ch >= 0x7f))
+			continue;
+		if (m->m_chat_len >= CHAT_MAX_TEXT)
+			continue;
+
+		m->m_chat_edit[m->m_chat_len++] = char(ch);
+		m->m_chat_edit[m->m_chat_len] = 0;
+	}
+}
+
+
+unsigned manager::chat_view(running_machine &machine, chat_line *out,
+		unsigned max)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine) || (out == nullptr))
+		return 0;
+
+	const osd_ticks_t now = osd_ticks();
+	const osd_ticks_t per = osd_ticks_per_second();
+	const osd_ticks_t life = per * CHAT_SECONDS;
+	const osd_ticks_t fade = per * CHAT_FADE_SECONDS;
+
+	const unsigned held = (m->m_chat_n < CHAT_LINES)
+			? m->m_chat_n : CHAT_LINES;
+	unsigned n = 0;
+
+	for (unsigned i = 0; (i < held) && (n < max); i++)
+	{
+		// Oldest first, so the newest ends up at the bottom.
+		const unsigned idx = (m->m_chat_n - held + i) % CHAT_LINES;
+		const chat_entry &e = m->m_chat[idx];
+		if (e.text[0] == 0)
+			continue;
+
+		const osd_ticks_t age = (now > e.shown) ? (now - e.shown) : 0;
+		if (age >= life)
+			continue;
+
+		u8 alpha = 255;
+		if ((fade != 0) && (age > (life - fade)))
+			alpha = u8((255 * (life - age)) / fade);
+
+		out[n].text = e.text;
+		out[n].alpha = alpha;
+		n++;
+	}
+
+	return n;
+}
+
+
+const char *manager::chat_prompt(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine) || !m->m_chat_open)
+		return nullptr;
+
+	std::snprintf(m->m_chat_prompt, sizeof(m->m_chat_prompt), "Say: %s_",
+			m->m_chat_edit);
+	return m->m_chat_prompt;
+}
+
+
+//-------------------------------------------------
 //  wait_for_input - the lockstep stall
 //-------------------------------------------------
 
@@ -1359,6 +1550,21 @@ void manager::frame_begin(running_machine &machine)
 		m->test_corrupt();
 	if ((m->m_test_resync_at != 0) && (m->m_frame == m->m_test_resync_at))
 		request_resync(machine);
+	if ((m->m_test_chat_at != 0) && (m->m_frame == m->m_test_chat_at))
+	{
+		chat_begin(machine);
+		std::snprintf(m->m_chat_edit, sizeof(m->m_chat_edit),
+				"hello from player %d", int(m->m_local));
+		m->m_chat_len = unsigned(std::strlen(m->m_chat_edit));
+	}
+	if (m->m_chat_open && (m->m_test_chat_at != 0)
+			&& (m->m_frame == (m->m_test_chat_at + m->m_test_chat_hold)))
+	{
+		m->chat_send();
+		m->m_chat_open = false;
+		m->m_chat_len = 0;
+		m->m_chat_edit[0] = 0;
+	}
 
 	// Before wait_for_input, because applying a resync moves m_frame and
 	// the wait has to be for the frame we end up on.
@@ -1379,6 +1585,18 @@ void manager::port_capture(ioport_port &port)
 	// already; reading the live controls now would invent input for a frame
 	// the other peer has long since run with something else.
 	if (m->m_replaying)
+		return;
+
+	// NOT WHILE TYPING. The keyboard belongs to the message, so nothing
+	// is captured and a neutral word goes out instead - no firing, no
+	// walking, no coin inserted by the letter C.
+	//
+	// This is not instant and cannot be: the words for the next m_delay
+	// frames are already published and on their way. At delay 1 that is
+	// one frame. Suppressing what has already been sent would mean
+	// rewriting a frame the other peer may have run - a desync to avoid
+	// one stray shot.
+	if (m->m_chat_open)
 		return;
 
 	m->m_map.capture_port(port, m->m_pending);

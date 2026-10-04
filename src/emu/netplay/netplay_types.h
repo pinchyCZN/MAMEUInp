@@ -49,6 +49,14 @@ constexpr player_t MAX_PLAYERS = 10;
 // Eight bits per player, one bit per player, so both fit a u16 mask.
 constexpr unsigned PLAYER_MASK_BITS = 16;
 
+// WIRE-FORMAT INVARIANT: player N is bit N-1 of a player mask. Players
+// are 1-based because that is how MAME numbers them, so there is no bit
+// 0 player and a zero mask names nobody.
+inline u8 slot_bit(player_t p)
+{
+	return u8(1u << (p - 1));
+}
+
 
 // ======================> input_word
 //
