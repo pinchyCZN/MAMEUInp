@@ -129,7 +129,11 @@ private:
 class udp_link : public transport
 {
 public:
-	udp_link();
+	// loss_pct and burst are a TEST FACILITY, from NETPLAY_UDP_LOSS and
+	// NETPLAY_UDP_BURST. A real link is the only other way to lose a
+	// datagram, and a bug that needs a real lossy link to reproduce is a
+	// bug nobody can re-test. Zero in production.
+	udp_link(unsigned loss_pct = 0, unsigned burst = 1);
 	~udp_link();
 
 	// host:port of the relay server. Returns false on any socket failure,
@@ -168,11 +172,16 @@ public:
 
 private:
 	bool recv_raw(u8 *buf, size_t cap, size_t &got);
+	bool drop_for_test();
 
 	// Deliberately not a sockaddr_in: including winsock2.h here would put it
 	// in front of every file that includes the manager, and MAME's own
 	// headers are particular about that. The real type lives in the .cpp.
 	void *      m_impl;
+	unsigned    m_loss_pct;     // test facility, see the constructor
+	unsigned    m_burst;
+	unsigned    m_burst_left;
+	u64         m_rand;
 	player_t    m_slot;
 	player_t    m_players;
 	u16         m_session;

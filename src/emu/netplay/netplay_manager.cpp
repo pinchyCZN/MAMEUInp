@@ -63,7 +63,7 @@ bool env_flag(const char *name)
 //-------------------------------------------------
 
 manager::manager(running_machine &machine, player_t local, player_t players,
-		unsigned delay, unsigned batch, bool redundant, bool selftest)
+		unsigned delay, unsigned batch, bool selftest)
 	: m_machine(machine)
 	, m_map()
 	, m_link()
@@ -72,15 +72,13 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_players(players)
 	, m_delay(delay)
 	, m_batch(batch)
-	, m_redundant(redundant)
+	, m_depth(1)
 	, m_need(0)
 	, m_pending(0)
 	, m_echo(0)
 	, m_local_mask(0)
 	, m_out_base(0)
 	, m_out_n(0)
-	, m_prev_base(0)
-	, m_prev_n(0)
 	, m_stalls(0)
 	, m_stall_frames(0)
 	, m_malformed(0)
@@ -129,7 +127,6 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 {
 	std::memset(m_ring, 0, sizeof(m_ring));
 	std::memset(m_out, 0, sizeof(m_out));
-	std::memset(m_prev, 0, sizeof(m_prev));
 	m_missing[0] = 0;
 
 	for (player_t p = 1; p <= m_players; p++)
@@ -158,6 +155,39 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	// frame and every frame after a resync. m_delay is clamped to 1 or
 	// more before we are constructed.
 	m_published = frame_t(m_delay) - 1;
+
+	// REDUNDANCY DEPTH, and the clamp is the whole point.
+	//
+	// A word for frame t is first sent at frame t - delay, and again in
+	// each later datagram that still carries it: t - delay + batch,
+	// t - delay + 2*batch, and so on. The receiver needs it by frame t, so
+	// the last copy that is any use leaves at t - 1. That gives
+	//
+	//     depth <= (delay - 1) / batch + 1
+	//
+	// and a copy beyond it is posted after the letter was needed. Asking
+	// for more is not refused, just clamped - see notes/protocol.txt 1.7.
+	//
+	// AT DELAY 1 THE CEILING IS 1: there is exactly one send opportunity,
+	// so no amount of configuration protects a delay-1 session from a
+	// single lost datagram. That is a reason to raise the delay on a real
+	// link, not a defect here.
+	unsigned want = env_uint("NETPLAY_REDUNDANCY", 0);
+	if (want == 0)
+		want = m_delay;             // unset: as deep as the deadline allows
+
+	const unsigned ceiling = ((m_delay - 1) / m_batch) + 1;
+	m_depth = want;
+	if (m_depth > ceiling)
+		m_depth = ceiling;
+	if (m_depth > REDUNDANCY_MAX)
+		m_depth = REDUNDANCY_MAX;
+	if (m_depth < 1)
+		m_depth = 1;
+
+	osd_printf_info("netplay: redundancy depth %u (asked %u, ceiling %u), %u byte input packets\n",
+			m_depth, want, ceiling,
+			unsigned(HEADER_BYTES + (m_depth * m_batch * sizeof(input_word))));
 
 	for (unsigned i = 0; i < CHAT_LINES; i++)
 	{
@@ -209,9 +239,9 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 			std::fprintf(m_log, "# machine=%s\n", m_machine.system().name);
 			std::fprintf(m_log, "# inputmap_digest=%016llx\n",
 					static_cast<unsigned long long>(m_map.digest()));
-			std::fprintf(m_log, "# players=%d local=%d delay=%d batch=%d redundant=%d\n",
+			std::fprintf(m_log, "# players=%d local=%d delay=%d batch=%d depth=%d\n",
 					int(m_players), int(m_local), int(m_delay), int(m_batch),
-					m_redundant ? 1 : 0);
+					int(m_depth));
 			std::fprintf(m_log, "# transport=%s local_bits=%08x\n",
 					m_link->name(), m_local_mask);
 			std::fprintf(m_log, "# budget_frames=%d\n",
@@ -312,7 +342,9 @@ void manager::open_session(running_machine &machine)
 		if (unset(host))
 			host = "127.0.0.1";
 
-		std::unique_ptr<udp_link> net(new udp_link);
+		std::unique_ptr<udp_link> net(new udp_link(
+				env_uint("NETPLAY_UDP_LOSS", 0),
+				env_uint("NETPLAY_UDP_BURST", 1)));
 		if (!net->open(host, env_uint("NETPLAY_PORT", 7000)))
 			return;
 
@@ -336,8 +368,7 @@ void manager::open_session(running_machine &machine)
 	const unsigned sl = env_uint("NETPLAY_STALL_LIMIT", STALL_LIMIT);
 
 	std::unique_ptr<manager> candidate(new manager(machine, local, players,
-			delay, batch, env_flag("NETPLAY_REDUNDANCY"),
-			env_flag("NETPLAY_SELFTEST")));
+			delay, batch, env_flag("NETPLAY_SELFTEST")));
 
 	candidate->m_stall_limit = (sl > 0) ? sl : STALL_LIMIT;
 	const char *const status = std::getenv("NETPLAY_STATUS");
@@ -431,55 +462,84 @@ void manager::batch_add(input_word word, frame_t frame)
 }
 
 
-void manager::batch_flush()
+unsigned manager::send_window(frame_t newest, unsigned span, unsigned fresh)
 {
-	if ((m_out_n == 0) || !m_link)
-		return;
+	if (!m_link || (span == 0))
+		return 0;
 
-	u8 buf[MAX_DATAGRAM];
-	input_word words[MAX_BATCH * 2];
+	if (span > (REDUNDANCY_MAX * MAX_BATCH))
+		span = REDUNDANCY_MAX * MAX_BATCH;
+	if (span > MAX_PACKET_WORDS)
+		span = MAX_PACKET_WORDS;
+
+	// THE WORDS ARE ALREADY IN THE RING. Our own word for every frame we
+	// published is sitting at at(f).words[m_local - 1], and the ring holds
+	// RING frames, so a resend needs no separate history buffer - which is
+	// also one fewer thing to keep in step with the ring.
+	//
+	// Walk back from newest while the ring still has our word. The header
+	// carries ONE base_frame and a count (protocol.txt 3.2), so the run
+	// must be contiguous and a gap ends it. Early in a session that
+	// shortens the window by itself.
+	unsigned n = 0;
+	frame_t f = newest;
+	for (;;)
+	{
+		const slot &sl = at(f);
+		if ((sl.stamp != f) || ((sl.have & slot_bit(m_local)) == 0))
+			break;
+
+		n++;
+		if ((n >= span) || (f == 0))
+			break;
+		f--;
+	}
+
+	if (n == 0)
+		return 0;
+
+	const frame_t first = newest - frame_t(n - 1);
+
+	input_word words[REDUNDANCY_MAX * MAX_BATCH];
+	for (unsigned i = 0; i < n; i++)
+		words[i] = at(first + frame_t(i)).words[m_local - 1];
 
 	packet_header head;
 	head.type = MSG_INPUT;
 	head.version = PROTOCOL_VERSION;
 	head.session = 0;               // assigned by the server at join [open]
+	head.base_frame = first;
+	head.nframes = u8(n);
 	head.player_mask = slot_bit(m_local);
-	head.flags = 0;
+	head.flags = (n > fresh) ? FLAG_REDUNDANT : 0;
 	head.reserved = 0;
 
-	unsigned n = 0;
-
-	// Redundancy: repeat the previous batch ahead of this one, but only when
-	// the two are contiguous. Non-contiguous would need two frame ranges in
-	// one packet, which the header cannot express (protocol.txt 3.2 carries
-	// one base_frame and a count).
-	const bool repeat = m_redundant && (m_prev_n != 0)
-			&& ((m_prev_base + frame_t(m_prev_n)) == m_out_base);
-
-	if (repeat)
-	{
-		head.base_frame = m_prev_base;
-		head.flags = u8(head.flags | FLAG_REDUNDANT);
-		for (unsigned i = 0; i < m_prev_n; i++)
-			words[n++] = m_prev[i];
-	}
-	else
-	{
-		head.base_frame = m_out_base;
-	}
-
-	for (unsigned i = 0; i < m_out_n; i++)
-		words[n++] = m_out[i];
-
-	head.nframes = u8(n);
-
+	u8 buf[MAX_DATAGRAM];
 	const size_t len = build_input(buf, sizeof(buf), head, words, nullptr);
-	if (len != 0)
-		m_link->send(buf, len);
+	if (len == 0)
+		return 0;
 
-	std::memcpy(m_prev, m_out, sizeof(m_prev));
-	m_prev_base = m_out_base;
-	m_prev_n = m_out_n;
+	m_link->send(buf, len);
+	return n;
+}
+
+
+void manager::batch_flush()
+{
+	if ((m_out_n == 0) || !m_link)
+		return;
+
+	// The batch defines only how many frames are NEW. How many go in the
+	// datagram is depth x batch, because a frame's word has to appear in
+	// m_depth separate datagrams for a burst of m_depth - 1 losses to be
+	// survivable.
+	const frame_t newest = m_out_base + frame_t(m_out_n) - 1;
+	unsigned span = m_depth * m_batch;
+	if (span < m_out_n)
+		span = m_out_n;
+
+	send_window(newest, span, m_out_n);
+
 	m_out_n = 0;
 }
 
@@ -496,23 +556,12 @@ void manager::resend_last()
 	// game). Repeating the last batch costs one datagram, is idempotent on
 	// the receiver because publish() ignores frames already run and
 	// rewrites identical words, and doubles as loss repair.
-	if (!m_link || (m_prev_n == 0))
+	// The same window batch_flush sends, sent again. Nothing in it is
+	// fresh, so every frame is flagged redundant.
+	if (!m_link || (m_published == 0))
 		return;
 
-	u8 buf[MAX_DATAGRAM];
-	packet_header head;
-	head.type = MSG_INPUT;
-	head.version = PROTOCOL_VERSION;
-	head.session = 0;
-	head.base_frame = m_prev_base;
-	head.nframes = u8(m_prev_n);
-	head.player_mask = slot_bit(m_local);
-	head.flags = FLAG_REDUNDANT;
-	head.reserved = 0;
-
-	const size_t len = build_input(buf, sizeof(buf), head, m_prev, nullptr);
-	if (len != 0)
-		m_link->send(buf, len);
+	send_window(m_published, m_depth * m_batch, 0);
 }
 
 
@@ -531,7 +580,7 @@ void manager::poll_link()
 	while ((len = m_link->recv(buf, sizeof(buf))) != 0)
 	{
 		packet_header head;
-		input_word words[MAX_BATCH * 2 * MAX_PLAYERS];
+		input_word words[MAX_PACKET_WORDS];   // a legal packet cannot exceed this
 		u64 hash = 0;
 		bool has_hash = false;
 
@@ -1141,6 +1190,20 @@ bool manager::chat_begin(running_machine &machine)
 	if ((m == nullptr) || (s_owner != &machine))
 		return false;
 
+	// CLEARING THE EDIT BUFFER IS NOT ENOUGH. Nothing consumes IME_CHAR
+	// during arcade play - the only other reader is
+	// process_natural_keyboard, gated on natkeyboard().in_use(), which no
+	// arcade driver sets - so every key pressed while the box was shut is
+	// still queued, up to EVENT_QUEUE_SIZE of them. Without this the first
+	// frame of composing pops the lot, and the player is greeted by a line
+	// of fire-button mashing they then have to delete.
+	//
+	// reset() rather than a pop loop: it also clears the pending UI key
+	// state, which is why menu.cpp does the same on entry. It does not
+	// touch input_manager, so the Enter and Escape edges chat_keys watches
+	// for are unaffected.
+	machine.ui_input().reset();
+
 	m->m_chat_open = true;
 	m->m_chat_len = 0;
 	m->m_chat_edit[0] = 0;
@@ -1552,13 +1615,43 @@ void manager::frame_begin(running_machine &machine)
 		request_resync(machine);
 	if ((m->m_test_chat_at != 0) && (m->m_frame == m->m_test_chat_at))
 	{
+		// DIAGNOSTIC: the backlog a player leaves behind by mashing fire
+		// buttons before opening the box. Nothing consumes IME_CHAR during
+		// arcade play, so these sit in the queue until chat pops them.
+		for (int j = 0; j < 5; j++)
+		{
+			ui_event junk;
+			std::memset(&junk, 0, sizeof(junk));
+			junk.event_type = ui_event::IME_CHAR;
+			junk.ch = char32_t('Z');
+			machine.ui_input().push_event(junk);
+		}
+
 		chat_begin(machine);
-		std::snprintf(m->m_chat_edit, sizeof(m->m_chat_edit),
-				"hello from player %d", int(m->m_local));
-		m->m_chat_len = unsigned(std::strlen(m->m_chat_edit));
+	}
+
+	// DIAGNOSTIC: type the message the frame AFTER opening, through the
+	// same IME_CHAR path a keyboard uses. Typing it rather than assigning
+	// m_chat_edit is the point: it proves characters still arrive after
+	// chat_begin resets the queue.
+	if ((m->m_test_chat_at != 0) && (m->m_frame == (m->m_test_chat_at + 1))
+			&& m->m_chat_open)
+	{
+		char line[CHAT_MAX_TEXT];
+		std::snprintf(line, sizeof(line), "hello from player %d",
+				int(m->m_local));
+		for (const char *q = line; *q != 0; q++)
+		{
+			ui_event key;
+			std::memset(&key, 0, sizeof(key));
+			key.event_type = ui_event::IME_CHAR;
+			key.ch = char32_t((unsigned char)(*q));
+			machine.ui_input().push_event(key);
+		}
 	}
 	if (m->m_chat_open && (m->m_test_chat_at != 0)
-			&& (m->m_frame == (m->m_test_chat_at + m->m_test_chat_hold)))
+			&& (m->m_frame == (m->m_test_chat_at + m->m_test_chat_hold))
+			&& (m->m_test_chat_hold > 2))
 	{
 		m->chat_send();
 		m->m_chat_open = false;
@@ -1750,6 +1843,7 @@ void manager::write_status()
 	std::fprintf(f, "players=%d\n", int(m_players));
 	std::fprintf(f, "delay=%d\n", int(m_delay));
 	std::fprintf(f, "batch=%d\n", int(m_batch));
+	std::fprintf(f, "depth=%d\n", int(m_depth));
 	std::fprintf(f, "budget=%d\n", int(m_delay) - int(m_batch) + 1);
 
 	std::fprintf(f, "frame=%u\n", unsigned(m_frame));

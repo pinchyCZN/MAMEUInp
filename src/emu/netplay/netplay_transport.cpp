@@ -201,7 +201,7 @@ void sleep_ms(unsigned ms)
 } // anonymous namespace
 
 
-udp_link::udp_link()
+udp_link::udp_link(unsigned loss_pct, unsigned burst)
 	: m_impl(nullptr)
 	, m_slot(0)
 	, m_players(0)
@@ -214,6 +214,10 @@ udp_link::udp_link()
 	, m_sent(0)
 	, m_recv(0)
 	, m_dropped(0)
+	, m_loss_pct(loss_pct)
+	, m_burst((burst == 0) ? 1 : burst)
+	, m_burst_left(0)
+	, m_rand(0x9e3779b97f4a7c15ull)
 {
 	std::memset(m_join, 0, sizeof(m_join));
 }
@@ -414,10 +418,57 @@ void udp_link::tick()
 	m_sent++;
 }
 
+bool udp_link::drop_for_test()
+{
+	if (m_loss_pct == 0)
+		return false;
+
+	// BURSTS, NOT A COIN FLIP PER PACKET. Real loss arrives in runs - a
+	// queue overflowing, a route changing - and a run is what defeats
+	// redundancy, because depth N survives only N-1 consecutive losses.
+	// Independent per-packet loss would make the feature look far better
+	// than it is.
+	//
+	// m_loss_pct IS THE CHANCE OF STARTING A BURST, NOT THE LOSS RATE.
+	// Effective loss is roughly m_loss_pct x m_burst, so 10 with a burst
+	// of 5 drops nearer 40% than 10% - measured 38% on a two-peer run.
+	// Read it as 'how often a burst begins' or a test will be far harsher
+	// than intended and the result will be misread as a bug.
+	//
+	// Bursts can also land back to back, which is how a depth-10 sender
+	// still loses a frame to a burst of 5: two adjacent bursts are ten
+	// consecutive losses. Keep m_loss_pct low to measure burst length
+	// alone.
+	if (m_burst_left != 0)
+	{
+		m_burst_left--;
+		m_dropped++;
+		return true;
+	}
+
+	// splitmix64, so a seeded run repeats exactly.
+	m_rand += 0x9e3779b97f4a7c15ull;
+	u64 z = m_rand;
+	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+	z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+	z = z ^ (z >> 31);
+
+	if ((z % 100) >= u64(m_loss_pct))
+		return false;
+
+	m_burst_left = m_burst - 1;
+	m_dropped++;
+	return true;
+}
+
+
 void udp_link::send(const u8 *data, size_t len)
 {
 	udp_state *const st = reinterpret_cast<udp_state *>(m_impl);
 	if ((st == nullptr) || (data == nullptr) || (len == 0) || (len > MAX_DATAGRAM))
+		return;
+
+	if (drop_for_test())
 		return;
 
 	const int n = sendto(st->sock, reinterpret_cast<const char *>(data), int(len), 0,

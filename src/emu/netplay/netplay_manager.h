@@ -177,6 +177,15 @@ private:
 	// 8 leaves headroom without making the buffers interesting.
 	static constexpr unsigned MAX_BATCH = 8;
 
+	// Redundancy depth: how many separate datagrams carry a given frame's
+	// word. Depth 1 is no redundancy and one lost packet ends the session.
+	//
+	// 16 rather than something larger because depth x batch words have to
+	// fit one datagram: 16 x 8 = 128 words is 1036 bytes against
+	// MAX_DATAGRAM's 1200. The deadline clamp below almost always bites
+	// first anyway.
+	static constexpr unsigned REDUNDANCY_MAX = 16;
+
 	// A wait this long is not jitter. Ending it runs a frame on incomplete
 	// input, which is a desync and what resync exists for, so it is counted
 	// rather than hidden. [open]
@@ -200,7 +209,7 @@ private:
 	};
 
 	manager(running_machine &machine, player_t local, player_t players,
-			unsigned delay, unsigned batch, bool redundant, bool selftest);
+			unsigned delay, unsigned batch, bool selftest);
 	bool setup(const char *logpath, std::unique_ptr<transport> link);
 
 	static manager *active();
@@ -213,6 +222,13 @@ private:
 	void publish(frame_t frame, player_t player, input_word word);
 	void batch_add(input_word word, frame_t frame);
 	void batch_flush();
+
+	// Sends one INPUT datagram holding the contiguous run of OUR OWN
+	// words that ends at `newest`, at most `span` frames long, shortened
+	// to whatever the ring actually holds. `fresh` is how many of those
+	// frames are new, and only sets FLAG_REDUNDANT truthfully. Returns
+	// the frames sent.
+	unsigned send_window(frame_t newest, unsigned span, unsigned fresh);
 	void resend_last();
 	void poll_link();
 	void wait_for_input();
@@ -243,7 +259,7 @@ private:
 	player_t                    m_players;
 	unsigned                    m_delay;
 	unsigned                    m_batch;        // tier K, frames per packet
-	bool                        m_redundant;
+	unsigned                    m_depth;        // datagrams per word
 	u8                          m_need;         // slots that must arrive
 
 	input_word                  m_pending;      // local word for m_frame + m_delay
@@ -256,9 +272,6 @@ private:
 	input_word                  m_out[MAX_BATCH];
 	frame_t                     m_out_base;
 	unsigned                    m_out_n;
-	input_word                  m_prev[MAX_BATCH];
-	frame_t                     m_prev_base;
-	unsigned                    m_prev_n;
 
 	// Accounting. The sizing work in protocol.txt 1.6.3 is these numbers:
 	// stalls and stall_frames are what a delay is chosen to drive to zero.

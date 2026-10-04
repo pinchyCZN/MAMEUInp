@@ -288,6 +288,12 @@ constexpr size_t RESYNC_REQ_FIXED = 8;
 // for nine times as much - but a cap has to exist somewhere and a line
 // nobody can read is not worth carrying.
 constexpr size_t CHAT_MAX_TEXT = 128;
+
+// The most words any one datagram can carry, derived rather than picked:
+// a receiver sized by this cannot be overrun by a legal packet, and a
+// sender that respects it cannot build an illegal one.
+constexpr unsigned MAX_PACKET_WORDS =
+		unsigned((MAX_DATAGRAM - HEADER_BYTES) / sizeof(input_word));
 constexpr size_t RESYNC_HEAD_BYTES = HEADER_BYTES + 12;
 
 size_t build_resync_req(u8 *buf, size_t cap, u16 session,

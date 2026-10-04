@@ -554,6 +554,103 @@ Table of Contents
    has no knob to reach for. Hence 1.6.3's two knobs. [inferred - the
    mechanism matches the reported symptom; their source was not read]
 
+1.7.  Redundancy depth: a lost datagram is fatal without it
+
+   Input has no retransmission. A frame's word cannot be skipped, no
+   peer may invent one, and nothing will produce it after the fact, so
+   ONE lost datagram stalls every peer for good. Measured over a real
+   link: 11122 datagrams sent, 11121 received, and both peers wedged
+   permanently on the single frame that went missing. [verified]
+
+   So each word is sent more than once. Depth is how many separate
+   datagrams carry a given frame: depth N survives a burst of N-1
+   consecutive losses, because the frame only dies when every copy is
+   lost. No round trip and no stall - the data simply arrives in time.
+
+1.7.1.  The ceiling is a deadline, not a preference
+
+   Frame t's word is first sent at frame t - D and repeats in each
+   later datagram still carrying it: t - D + K, t - D + 2K, and so on
+   for batch K. The receiver needs it by frame t, so the last copy that
+   is any use leaves at t - 1:
+
+       depth <= (D - 1) / K + 1
+
+   A copy past that is posted after the letter was needed. Asking for
+   more is clamped, not refused, so a configuration can name a large
+   number and let the delay decide.
+
+   TWO CONSEQUENCES THAT ARE EASY TO MISS:
+
+   o AT DELAY 1 THE CEILING IS 1. There is exactly one send
+     opportunity, so a delay-1 session cannot be protected from a
+     single lost datagram by any amount of configuration. It is a
+     localhost setting.
+   o BATCHING SPENDS THE SAME BUDGET AS JITTER. At D=10 the ceiling is
+     10 at K=1 but only 2 at K=6, because packets leave six times less
+     often. Batching already costs the jitter budget (1.6.3); it costs
+     loss tolerance in the same proportion.
+
+   The delay knob therefore buys both smoothness and loss tolerance,
+   in the same direction. Raising D on a bad link is doubly right.
+
+1.7.2.  Measured, and the boundary is exact
+
+   dino, two peers, delay 10 batch 1, loss injected at the sending
+   socket in bursts (tools: NETPLAY_UDP_LOSS, NETPLAY_UDP_BURST).
+
+   +-------+-------+-----------+---------+------------------------+
+   | depth | burst | datagrams | frames  | result                 |
+   |       |       |   dropped |         |                        |
+   +=======+=======+===========+=========+========================+
+   |     1 |     1 |         - |       0 | deadlock at once       |
+   +-------+-------+-----------+---------+------------------------+
+   |    10 |     1 |        30 |    1194 | in sync, waits 0       |
+   +-------+-------+-----------+---------+------------------------+
+   |    10 |     3 |        27 |    1194 | in sync, waits 0       |
+   +-------+-------+-----------+---------+------------------------+
+   |    10 |     9 |        72 |    1194 | in sync, waits 0       |
+   +-------+-------+-----------+---------+------------------------+
+   |    10 |    10 |         - |       0 | deadlock               |
+   +-------+-------+-----------+---------+------------------------+
+
+   Burst 9 survives and burst 10 does not, which is the N-1 boundary
+   exactly. waits=0 in every surviving row: the losses were invisible,
+   not merely recovered from. [verified]
+
+   Cost at depth 10, batch 1: a 92 byte payload against 20, so about
+   58 kbit/s per peer including IP and UDP headers instead of 23.
+
+1.7.3.  Why repetition and not an erasure code
+
+   Reed-Solomon and friends pay off when the payload dwarfs the
+   per-packet overhead. Here it is the reverse: 8 bytes of payload
+   against 28 bytes of IP and UDP header. A parity shard costs a whole
+   datagram; a duplicated word costs eight bytes. For payloads this
+   small a repetition code is not a simplification, it is the better
+   code.
+
+   The CD audio comparison is apt but incomplete. CIRC interleaves
+   because a disc has NO back channel and must survive a scratch with
+   forward error correction alone. We have a back channel, so
+   repetition covers the common case without a round trip and a
+   request can cover the tail.
+
+1.7.4.  What depth does not cover  [open]
+
+   A burst of depth or more consecutive losses still ends the session,
+   and bursts arriving back to back add up: two adjacent bursts of 5
+   are ten consecutive losses. A retransmission request is the
+   remaining gap - MSG_STALL is reserved for it, 3.3 - and the shape is
+   settled: the stalled peer names the frame it lacks, because only the
+   receiver knows what is missing.
+
+   A SENDER CANNOT GUESS THE FRAME. When the stall above was measured
+   the waiting peer was ten frames BEHIND the other, so the frame it
+   needed was behind the sender's most recent window. Resending the
+   last few frames unprompted would have sent words the peer already
+   had and never the one it wanted.
+
 2.  Resync from a savestate
 
    How a peer that has diverged is brought back onto the host's
