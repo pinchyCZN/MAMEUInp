@@ -104,8 +104,8 @@ BEGIN
             MENUITEM "Versus",                      ID_TOGGLE_TAB_VERSUS
         END
         MENUITEM SEPARATOR
-        MENUITEM "L&arge Icons",                ID_VIEW_LARGE_ICON
-        MENUITEM "S&mall Icons",                ID_VIEW_SMALL_ICON
+        MENUITEM "L&arge Icons",                ID_VIEW_LARGE_ICON, GRAYED
+        MENUITEM "S&mall Icons",                ID_VIEW_SMALL_ICON, GRAYED
         MENUITEM "&List",                       ID_VIEW_LIST_MENU
         MENUITEM "&Details",                    ID_VIEW_DETAIL
         MENUITEM "&Grouped",                    ID_VIEW_GROUPED

@@ -1966,10 +1966,8 @@ static BOOL Win32UI_init(HINSTANCE hInstance, LPWSTR lpCmdLine, int nCmdShow)
 	switch (GetViewMode())
 	{
 	case VIEW_LARGE_ICONS :
-		SetView(ID_VIEW_LARGE_ICON);
-		break;
 	case VIEW_SMALL_ICONS :
-		SetView(ID_VIEW_SMALL_ICON);
+		SetView(ID_VIEW_LIST_MENU);
 		break;
 	case VIEW_INLIST :
 		SetView(ID_VIEW_LIST_MENU);

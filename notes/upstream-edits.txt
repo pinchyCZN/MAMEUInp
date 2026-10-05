@@ -280,6 +280,50 @@ Table of Contents
    |                              | anchored RA_LEFT so it stops   |
    |                              | following the window edge      |
    +------------------------------+--------------------------------+
+   | src/osd/winui/winui.cpp      | (cont) a saved icon view is    |
+   |                              | clamped to List at startup,    |
+   |                              | because restoring one hangs    |
+   |                              | the app before any menu is     |
+   |                              | reachable                      |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/ui_opts.h      | default list_mode was 5, one   |
+   |                              | past the last valid view, so a |
+   |                              | fresh install could not get    |
+   |                              | Grouped. Now 4                 |
+   +------------------------------+--------------------------------+
+   | scripts/genie.lua            | /WX was unconditional, so      |
+   |                              | NOWERROR=1 did nothing under   |
+   |                              | MSVC. build-config.txt 3.2     |
+   +------------------------------+--------------------------------+
+   | scripts/src/osd/winui.lua    | winui.cpp calls into these     |
+   |                              | unconditionally, so the libs   |
+   |                              | cannot be optional             |
+   +------------------------------+--------------------------------+
+   | src/lib/netlist/nl_base.h    | MSVC compile fixes: a          |
+   |                              | static_cast MSVC will not      |
+   |                              | infer, and a matching cast at  |
+   |                              | the queue test                 |
+   +------------------------------+--------------------------------+
+   | src/lib/netlist/plib/        | MSVC will not accept a         |
+   |   parray.h                   | constexpr call in the array    |
+   |                              | bound it was using             |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/mui_util.h     | two functions DEFINED in a     |
+   |                              | header made inline, or every   |
+   |                              | TU including it emits its own  |
+   |                              | and the link is ambiguous      |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/messui.cpp     | core_options::value() has no   |
+   |                              | null check, so a missing entry |
+   |                              | crashed the picker refresh     |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/properties.cpp | holds the one definition of    |
+   |                              | g_bModifiedSoftwarePaths       |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/properties.h   | that variable was DEFINED in   |
+   |                              | the header; now extern, so it  |
+   |                              | has one definition not many    |
+   +------------------------------+--------------------------------+
    | src/emu/emuopts.cpp / .h     | -netplay_hashlog and           |
    |                              | -netplay_hashinterval. Also    |
    |                              | restores cannonical_instance_  |
