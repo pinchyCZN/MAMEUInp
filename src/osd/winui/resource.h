@@ -517,7 +517,7 @@
 #define IDC_NPL_COUNT                   2330
 // NETPLAY: the hosted game, inside the lobby dialog
 #define IDC_NPG_DRIVER                  2331
-#define IDC_NPG_USESEL                  2332
+#define IDC_NPG_PICK                    2332
 #define IDC_NPG_FULLNAME                2333
 #define IDC_NPG_PLAYERS                 2334
 #define IDC_NPG_DELAY                   2335

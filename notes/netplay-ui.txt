@@ -216,6 +216,12 @@ Table of Contents
    them. This is what makes the "delay must match" rule (3.1)
    unbreakable through the lobby rather than merely documented.
 
+   Players, delay and frames-per-packet are fixed-choice lists, not
+   typed numbers: 2-8, 1-20 and 1-6. The batch ceiling is the tier
+   ladder of protocol.txt 1.6 rather than the engine MAX_BATCH of 8.
+   The direct connect dialog still accepts the wider ranges it always
+   did - it is the expert path and validates rather than constrains.
+
    The slot each player is given is the roster position, and LAUNCH
    carries it. JOIN then names that slot on the wire - protocol.txt
    4.2.2 - so the relay seats everyone where the lobby said.
@@ -242,10 +248,10 @@ Table of Contents
        < CHAT pinchy hello
        > BYE
        > CREATE dino players=2 delay=6 batch=1 savestates=1 config=1
-       < GAME dino host=pinchy 1/2 delay=6 batch=1 savestates=1 config=1
+       < GAME dino host=pinchy players=2 delay=6 batch=1 savestates=1 config=1
        < ROSTER pinchy
        > JOIN
-       < GAME dino host=pinchy 2/2 delay=6 batch=1 savestates=1 config=1
+       < GAME dino host=pinchy players=2 delay=6 batch=1 savestates=1 config=1
        < ROSTER pinchy,dave
        > LEAVE
        > START
@@ -268,8 +274,9 @@ Table of Contents
    about to serve, so it is refused while a session is running.
 
    GAME and ROSTER are broadcast on every change and sent to each new
-   arrival. ROSTER is the authority on who is in and in what slot;
-   GAME's host= and n/m are for display.
+   arrival. ROSTER is the authority on who is IN and in what slot; GAME
+   carries what the host CHOSE. So GAME has players= and no count: a
+   field carried on two lines is a field that can disagree with itself.
 
    The host leaving ends the game rather than promoting anyone:
    handing a guest settings they did not choose is worse than making

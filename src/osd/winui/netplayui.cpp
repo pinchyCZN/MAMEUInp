@@ -529,10 +529,45 @@ static unsigned kv(const std::string &s, const char *key, unsigned fallback)
 }
 
 
-// Exactly LOBBY_ROWS rows. Measured rather than set in the template: the item
-// height follows the font and the DPI, so a height in dialog units that shows
-// four rows here shows three or six somewhere else.
-#define LOBBY_ROWS 4
+
+#define PLAYERS_LO  2
+#define PLAYERS_HI  8
+#define DELAY_LO    1
+#define DELAY_HI    20
+#define BATCH_LO    1
+#define BATCH_HI    6
+
+
+static void combo_set(HWND hDlg, int id, unsigned lo, unsigned hi, unsigned v)
+{
+	if (v < lo)
+		v = lo;
+	if (v > hi)
+		v = hi;
+	SendDlgItemMessage(hDlg, id, CB_SETCURSEL, v - lo, 0);
+}
+
+
+static unsigned combo_get(HWND hDlg, int id, unsigned lo)
+{
+	const LRESULT i = SendDlgItemMessage(hDlg, id, CB_GETCURSEL, 0, 0);
+	return (i == CB_ERR) ? lo : unsigned(lo + unsigned(i));
+}
+
+
+static void combo_fill(HWND hDlg, int id, unsigned lo, unsigned hi, unsigned v)
+{
+	SendDlgItemMessage(hDlg, id, CB_RESETCONTENT, 0, 0);
+	for (unsigned n = lo; n <= hi; n++)
+	{
+		wchar_t t[16];
+		_snwprintf(t, 16, L"%u", n);
+		SendDlgItemMessageW(hDlg, id, CB_ADDSTRING, 0,
+				reinterpret_cast<LPARAM>(t));
+	}
+	combo_set(hDlg, id, lo, hi, v);
+}
+
 
 static void size_player_list(HWND hDlg)
 {
@@ -545,21 +580,18 @@ static void size_player_list(HWND hDlg)
 	if (ih <= 0)
 		return;
 
-	RECT r;
+	RECT r, cr;
 	GetWindowRect(lb, &r);
-	POINT tl = { r.left, r.top };
-	ScreenToClient(hDlg, &tl);
-
-	const int h = (ih * LOBBY_ROWS) + (GetSystemMetrics(SM_CYEDGE) * 2);
-	SetWindowPos(lb, nullptr, 0, 0, r.right - r.left, h,
-			SWP_NOMOVE | SWP_NOZORDER);
-
-	RECT cr;
 	GetWindowRect(count, &cr);
-	POINT cp = { cr.left, cr.top };
-	ScreenToClient(hDlg, &cp);
-	SetWindowPos(count, nullptr, cp.x, tl.y + h + 4, 0, 0,
-			SWP_NOSIZE | SWP_NOZORDER);
+
+	const int edge = GetSystemMetrics(SM_CYEDGE) * 2;
+	const int avail = (cr.top - 4) - r.top - edge;
+	const int rows = avail / ih;
+	if (rows < 1)
+		return;
+
+	SetWindowPos(lb, nullptr, 0, 0, r.right - r.left, (rows * ih) + edge,
+			SWP_NOMOVE | SWP_NOZORDER);
 }
 
 
@@ -653,10 +685,11 @@ static void game_enable(HWND hDlg)
 	// A guest editing the session settings would be editing a display: the
 	// host chose them and the server already has them.
 	const bool editable = (!s_g_active || s_g_amhost);
-	// Left enabled on purpose: a disabled edit draws its text in grey,
-	// which is unreadable on a dark theme, and Host game being disabled
-	// already makes the box inert while a game is up.
-	EnableWindow(GetDlgItem(hDlg, IDC_NPG_USESEL), !s_g_active);
+	// IDC_NPG_PICK is left alone: it is disabled in the template until the
+	// game picker exists. The System edit stays enabled whatever the game
+	// state, because a disabled edit draws its text in grey and that is
+	// unreadable on a dark theme; Host game being disabled already makes
+	// the box inert while a game is up.
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_PLAYERS), editable);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_DELAY), editable);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_BATCH), editable);
@@ -690,9 +723,9 @@ static void game_show(HWND hDlg)
 
 	SetDlgItemTextA(hDlg, IDC_NPG_DRIVER, s_g_driver.c_str());
 	show_fullname(hDlg, s_g_driver);
-	SetDlgItemInt(hDlg, IDC_NPG_PLAYERS, s_g_players, false);
-	SetDlgItemInt(hDlg, IDC_NPG_DELAY, s_g_delay, false);
-	SetDlgItemInt(hDlg, IDC_NPG_BATCH, s_g_batch, false);
+	combo_set(hDlg, IDC_NPG_PLAYERS, PLAYERS_LO, PLAYERS_HI, s_g_players);
+	combo_set(hDlg, IDC_NPG_DELAY, DELAY_LO, DELAY_HI, s_g_delay);
+	combo_set(hDlg, IDC_NPG_BATCH, BATCH_LO, BATCH_HI, s_g_batch);
 	CheckDlgButton(hDlg, IDC_NPG_SAVESTATES,
 			s_g_savestates ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hDlg, IDC_NPG_SENDCONFIG,
@@ -734,9 +767,9 @@ static void game_host(HWND hDlg)
 	std::snprintf(line, sizeof(line),
 			"CREATE %s players=%u delay=%u batch=%u savestates=%u config=%u",
 			driver,
-			GetDlgItemInt(hDlg, IDC_NPG_PLAYERS, nullptr, false),
-			GetDlgItemInt(hDlg, IDC_NPG_DELAY, nullptr, false),
-			GetDlgItemInt(hDlg, IDC_NPG_BATCH, nullptr, false),
+			combo_get(hDlg, IDC_NPG_PLAYERS, PLAYERS_LO),
+			combo_get(hDlg, IDC_NPG_DELAY, DELAY_LO),
+			combo_get(hDlg, IDC_NPG_BATCH, BATCH_LO),
 			(IsDlgButtonChecked(hDlg, IDC_NPG_SAVESTATES) == BST_CHECKED) ? 1u : 0u,
 			(IsDlgButtonChecked(hDlg, IDC_NPG_SENDCONFIG) == BST_CHECKED) ? 1u : 0u);
 	lobby_send_line(line);
@@ -1013,9 +1046,9 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 
 		roster_init(hDlg);
 		size_player_list(hDlg);
-		SetDlgItemInt(hDlg, IDC_NPG_PLAYERS, s_cfg.players, false);
-		SetDlgItemInt(hDlg, IDC_NPG_DELAY, s_cfg.delay, false);
-		SetDlgItemInt(hDlg, IDC_NPG_BATCH, s_cfg.batch, false);
+		combo_fill(hDlg, IDC_NPG_PLAYERS, PLAYERS_LO, PLAYERS_HI, s_cfg.players);
+		combo_fill(hDlg, IDC_NPG_DELAY, DELAY_LO, DELAY_HI, s_cfg.delay);
+		combo_fill(hDlg, IDC_NPG_BATCH, BATCH_LO, BATCH_HI, s_cfg.batch);
 		CheckDlgButton(hDlg, IDC_NPG_SAVESTATES,
 				s_cfg.savestates ? BST_CHECKED : BST_UNCHECKED);
 		CheckDlgButton(hDlg, IDC_NPG_SENDCONFIG,
@@ -1081,16 +1114,6 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 				}
 				return true;
 			}
-
-		case IDC_NPG_USESEL:
-			if (s_selected < 0)
-			{
-				game_result(hDlg, "Select a system in the main window first.");
-				return true;
-			}
-			SetDlgItemTextA(hDlg, IDC_NPG_DRIVER, driver_list::driver(s_selected).name);
-			show_fullname(hDlg, driver_list::driver(s_selected).name);
-			return true;
 
 		case IDC_NPG_HOST:
 			game_host(hDlg);

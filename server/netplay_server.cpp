@@ -684,10 +684,13 @@ void relay::lobby_game_state(int only)
 
 	char buf[256];
 	std::snprintf(buf, sizeof(buf),
-			"GAME %s host=%s %u/%u delay=%u batch=%u savestates=%u config=%u",
+			// players= rather than the count as "2/4": the count is in
+			// ROSTER, and a field carried twice is a field that disagrees
+			// with itself.
+			"GAME %s host=%s players=%u delay=%u batch=%u savestates=%u config=%u",
 			m_game.driver.c_str(),
 			m_lobby[m_game.roster[0]].name.c_str(),
-			m_game.count, m_game.players,
+			m_game.players,
 			m_game.delay, m_game.batch,
 			m_game.savestates ? 1u : 0u,
 			m_game.send_config ? 1u : 0u);
