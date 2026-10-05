@@ -77,7 +77,7 @@ bool parse_header(const u8 *buf, size_t len, packet_header &head)
 	head.reserved = get_u8(buf + 11);
 
 	// A zero type is always malformed - see the numbering note in the header.
-	if ((head.type == 0) || (head.type > MSG_NAK))
+	if ((head.type == 0) || (head.type > MSG_CONFIG))
 		return false;
 	if (head.version != PROTOCOL_VERSION)
 		return false;
@@ -469,6 +469,97 @@ bool parse_nak(const u8 *buf, size_t len, player_t &from, u8 &about,
 	about = get_u8(buf + HEADER_BYTES + 0);
 	reason = get_u8(buf + HEADER_BYTES + 1);
 	return (about != 0) && (reason != 0);
+}
+
+
+size_t build_config(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, u64 digest, u16 flags, const config_rec *recs,
+		unsigned count)
+{
+	if (count > CONFIG_MAX_FIELDS)
+		return 0;
+	if ((count != 0) && (recs == nullptr))
+		return 0;
+
+	const size_t payload = 12 + (size_t(count) * CONFIG_REC_BYTES);
+	const size_t len = control_head(buf, cap, MSG_CONFIG, session, frame,
+			payload);
+	if (len == 0)
+		return 0;
+
+	// control_head zeroes bytes 8..11; the sender goes in player_mask.
+	put_u8(buf + 9, slot_bit(from));
+
+	u8 *q = buf + HEADER_BYTES;
+	put_u64(q + 0, digest);
+	put_u16(q + 8, flags);
+	put_u16(q + 10, u16(count));
+	q += 12;
+
+	for (unsigned i = 0; i < count; i++)
+	{
+		put_u16(q + 0, recs[i].index);
+		put_u16(q + 2, recs[i].flags);
+		put_u32(q + 4, recs[i].value);
+		put_u32(q + 8, u32(recs[i].sensitivity));
+		put_u32(q + 12, u32(recs[i].delta));
+		put_u32(q + 16, u32(recs[i].centerdelta));
+		q += CONFIG_REC_BYTES;
+	}
+	return len;
+}
+
+
+bool parse_config(const u8 *buf, size_t len, player_t &from, u64 &digest,
+		u16 &flags, config_rec *recs, unsigned max, unsigned &count)
+{
+	count = 0;
+
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_CONFIG))
+		return false;
+	if (len < CONFIG_HEAD_BYTES)
+		return false;
+
+	from = 0;
+	for (player_t pl = 1; pl <= MAX_PLAYERS; pl++)
+	{
+		if (head.player_mask == slot_bit(pl))
+		{
+			from = pl;
+			break;
+		}
+	}
+	if (from == 0)
+		return false;
+
+	const u8 *q = buf + HEADER_BYTES;
+	digest = get_u64(q + 0);
+	flags = get_u16(q + 8);
+	const unsigned n = get_u16(q + 10);
+	q += 12;
+
+	// The declared count must match the datagram exactly, or a short
+	// packet would be read past its end.
+	if (len != (CONFIG_HEAD_BYTES + (size_t(n) * CONFIG_REC_BYTES)))
+		return false;
+	if (n > CONFIG_MAX_FIELDS)
+		return false;
+	if ((n != 0) && ((recs == nullptr) || (n > max)))
+		return false;
+
+	for (unsigned i = 0; i < n; i++)
+	{
+		recs[i].index = get_u16(q + 0);
+		recs[i].flags = get_u16(q + 2);
+		recs[i].value = get_u32(q + 4);
+		recs[i].sensitivity = s32(get_u32(q + 8));
+		recs[i].delta = s32(get_u32(q + 12));
+		recs[i].centerdelta = s32(get_u32(q + 16));
+		q += CONFIG_REC_BYTES;
+	}
+	count = n;
+	return true;
 }
 
 

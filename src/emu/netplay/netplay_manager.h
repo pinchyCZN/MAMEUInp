@@ -278,6 +278,9 @@ private:
 	void service_resync();
 	void take_snapshot();
 	void send_nak(u8 about, u8 reason);
+	void send_config();
+	void take_config(u64 digest, u16 flags, const config_rec *recs,
+			unsigned count);
 	void take_nak(u8 about, u8 reason);
 	void do_capture();
 	void test_corrupt();
@@ -300,6 +303,15 @@ private:
 	// MACHINE_SUPPORTS_SAVE does not predict it, so it has to be a
 	// decision somebody makes rather than something inferred.
 	bool                        m_savestates;
+
+	// Does the host hand its DIP, config and analog settings to guests?
+	// On by default: joining somebody's game and playing it with their
+	// settings is what every other multiplayer game does, and the
+	// alternative is a session that will not start and a player who
+	// cannot tell which switch is wrong. Off restores the refusal.
+	bool                        m_send_config;
+	bool                        m_config_done;
+	bool                        m_config_checked;
 	u8                          m_need;         // slots that must arrive
 
 	input_word                  m_pending;      // local word for m_frame + m_delay

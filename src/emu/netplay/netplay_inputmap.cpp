@@ -282,15 +282,226 @@ bool inputmap::build(running_machine &machine)
 		for (const owned &o : pe.fields)
 			h = mix(h, (u64(o.mask) << 16) | (u64(o.player) << 8) | u64(o.bit));
 	}
-	// Folded in, so a DIP difference is refused by the same check that
-	// refuses a driver difference. protocol.txt 4.2
-	h = mix(h, m_config_digest);
+	// THE CONFIG DIGEST IS DELIBERATELY NOT FOLDED IN HERE.
+	//
+	// It was, and that made a DIP mismatch a clean refusal at join - but
+	// it also made adoption impossible, because the server compares one
+	// opaque number and cannot tell "different driver build" (never
+	// adoptable) from "different DIP" (adoptable). Nor could a guest
+	// adopt before computing the digest it joins with: there is no peer
+	// channel before the session exists.
+	//
+	// So the config check moved to the peers (protocol.txt 4.2.1): this
+	// digest stays structural and the server keeps enforcing it, while
+	// the host announces its config digest over MSG_CONFIG and the guest
+	// adopts, verifies, or refuses itself.
 
 	m_digest = finalise(h);
 
 	m_fits = m_unowned.empty();
 	m_built = true;
 	return m_fits;
+}
+
+
+//-------------------------------------------------
+//  configuration: collect, apply, name
+//-------------------------------------------------
+
+namespace {
+
+// THE ONE CANONICAL ORDER, used by every function below and by the
+// config digest. Ports come from an ordered map so their sequence is
+// the same on every peer, and a port's fields keep declaration order.
+// Only configuration is selected: a DIP or config field, or anything
+// analog. A play field's value is not a setting and is never sent.
+bool config_interesting(const ioport_field &field)
+{
+	return (field.type() == IPT_DIPSWITCH)
+			|| (field.type() == IPT_CONFIG)
+			|| field.is_analog();
+}
+
+} // anonymous namespace
+
+
+unsigned inputmap::collect_config(running_machine &machine,
+		config_rec *out, unsigned max)
+{
+	if (out == nullptr)
+		return 0;
+
+	unsigned idx = 0, n = 0;
+	for (auto &entry : machine.ioport().ports())
+	{
+		for (const ioport_field &field : entry.second->fields())
+		{
+			if (!config_interesting(field))
+				continue;
+
+			if (n < max)
+			{
+				config_rec &r = out[n];
+				r.index = u16(idx);
+				r.flags = field.live().toggle ? CONFIG_REC_TOGGLE : 0;
+				r.value = u32(field.live().value & field.mask());
+				r.sensitivity = 0;
+				r.delta = 0;
+				r.centerdelta = 0;
+
+				const analog_field *const an = field.live().analog;
+				if (an != nullptr)
+				{
+					r.flags = u16(r.flags | CONFIG_REC_ANALOG);
+					if (an->reverse())
+						r.flags = u16(r.flags | CONFIG_REC_REVERSE);
+					r.sensitivity = an->sensitivity();
+					r.delta = an->delta();
+					r.centerdelta = an->centerdelta();
+				}
+				n++;
+			}
+			idx++;
+		}
+	}
+
+	return n;
+}
+
+
+unsigned inputmap::apply_config(running_machine &machine,
+		const config_rec *recs, unsigned count)
+{
+	if ((recs == nullptr) || (count == 0))
+		return 0;
+
+	unsigned idx = 0, changed = 0;
+	for (auto &entry : machine.ioport().ports())
+	{
+		for (ioport_field &field : entry.second->fields())
+		{
+			if (!config_interesting(field))
+				continue;
+
+			const unsigned here = idx++;
+
+			// Matched by the index in the record, not by position in the
+			// array, so a sender that sends a subset still lands correctly.
+			const config_rec *r = nullptr;
+			for (unsigned i = 0; i < count; i++)
+				if (recs[i].index == here)
+				{
+					r = &recs[i];
+					break;
+				}
+			if (r == nullptr)
+				continue;
+
+			// THROUGH set_user_settings, THE SAME ENTRY POINT MAME'S OWN UI
+			// USES. analog_field keeps its live members private and names
+			// ioport_field::set_user_settings as its friend, so that is the
+			// sanctioned way in rather than reaching past it.
+			//
+			// IN MEMORY ONLY. These are somebody else's settings, borrowed
+			// for one session; nothing here writes the cfg file, so joining
+			// a game cannot permanently change this machine's DIP switches.
+			ioport_field::user_settings us;
+			field.get_user_settings(us);
+
+			bool moved = false;
+			const ioport_value want = (r->value & field.mask())
+					| (us.value & ~field.mask());
+			if (us.value != want)
+			{
+				us.value = want;
+				moved = true;
+			}
+
+			const bool tog = ((r->flags & CONFIG_REC_TOGGLE) != 0);
+			if (us.toggle != tog)
+			{
+				us.toggle = tog;
+				moved = true;
+			}
+
+			if (field.is_analog() && ((r->flags & CONFIG_REC_ANALOG) != 0))
+			{
+				const bool rev = ((r->flags & CONFIG_REC_REVERSE) != 0);
+				if ((us.sensitivity != r->sensitivity)
+						|| (us.delta != r->delta)
+						|| (us.centerdelta != r->centerdelta)
+						|| (us.reverse != rev))
+				{
+					us.sensitivity = r->sensitivity;
+					us.delta = r->delta;
+					us.centerdelta = r->centerdelta;
+					us.reverse = rev;
+					moved = true;
+				}
+			}
+
+			if (moved)
+			{
+				field.set_user_settings(us);
+				changed++;
+			}
+		}
+	}
+
+	// The port defvalue is rebuilt from these fields by
+	// ioport_port::update_defvalue, which runs later in
+	// ioport_manager::frame_update - so the next frame sees them without
+	// anything here having to force it.
+	return changed;
+}
+
+
+const char *inputmap::config_field_name(running_machine &machine,
+		unsigned index, std::string &tag)
+{
+	unsigned idx = 0;
+	for (auto &entry : machine.ioport().ports())
+	{
+		for (const ioport_field &field : entry.second->fields())
+		{
+			if (!config_interesting(field))
+				continue;
+			if (idx++ != index)
+				continue;
+
+			tag = entry.first;
+			return (field.name() != nullptr) ? field.name() : "?";
+		}
+	}
+	return nullptr;
+}
+
+
+u64 inputmap::recompute_config_digest(running_machine &machine)
+{
+	u64 c = MIX_SEED;
+	for (auto &entry : machine.ioport().ports())
+	{
+		c = mix_string(c, entry.first.c_str());
+		for (const ioport_field &field : entry.second->fields())
+		{
+			c = mix(c, (u64(field.mask()) << 32)
+					| u64(field.live().value & field.mask()));
+			c = mix(c, field.live().toggle ? 1u : 0u);
+
+			const analog_field *const an = field.live().analog;
+			if (an != nullptr)
+			{
+				c = mix(c, u64(u32(an->sensitivity())));
+				c = mix(c, u64(u32(an->delta())));
+				c = mix(c, u64(u32(an->centerdelta())));
+				c = mix(c, an->reverse() ? 1u : 0u);
+			}
+		}
+	}
+
+	m_config_digest = finalise(c);
+	return m_config_digest;
 }
 
 

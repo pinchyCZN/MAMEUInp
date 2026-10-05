@@ -63,6 +63,10 @@ Table of Contents
          3.10.1. Measured
       3.11. Typing suppresses local input, and cannot do so instantly
       3.12. NAK, refusing a request
+      3.13. CONFIG, the host's settings
+         3.13.1. Why the check moved off the server
+         3.13.2. Adoption is verified, not assumed
+         3.13.3. Measured
    4. Handshake
       4.1. Sequence
       4.2. What JOIN carries
@@ -1196,6 +1200,9 @@ Table of Contents
    | 0x0e | NAK     | peer -> all | a request this peer will not serve,  |
    |      |         |             | 3.12                                 |
    +------+---------+-------------+--------------------------------------+
+   | 0x0f | CONFIG  | host -> all | the host's DIP, config and analog    |
+   |      |         |             | settings, or just their digest, 3.13 |
+   +------+---------+-------------+--------------------------------------+
 
    Numbering starts at 1 so that a zero first byte is always a malformed
    packet rather than a valid message.
@@ -1473,6 +1480,90 @@ Table of Contents
    frames sent 11 requests, the host sent 11 refusals, the guest
    reported 11, no request timed out, and lockstep held across all 717
    frames. [verified]
+
+3.13.  CONFIG, the host's settings
+
+       header            12 bytes, 3.2. player_mask is the SENDER
+       digest             8 bytes, the host's config digest
+       flags              2 bytes, bit 0 = values follow
+       count              2 bytes, records
+       records           count x 20 bytes
+
+       record: index u16, flags u16, value u32,
+               sensitivity s32, keydelta s32, centerdelta s32
+
+   FIELDS ARE IDENTIFIED BY POSITION, not by tag or mask. Both peers
+   walk machine.ioport().ports() - an ordered map, so the same order
+   everywhere - and each port's fields in declaration order, selecting
+   DIP, config and analog fields. The structural digest the handshake
+   already enforces is what guarantees the two walks produce the same
+   sequence, so an ordinal is enough and no strings travel.
+
+   THE DIGEST TRAVELS EVEN WHEN THE VALUES DO NOT. A host told not to
+   share settings still says what its settings ARE, or a guest
+   configured differently has no way to find out and plays on desynced
+   - which is the failure the message exists to prevent.
+
+3.13.1.  Why the check moved off the server
+
+   The config digest used to be folded into the inputmap digest, which
+   made a DIP mismatch a clean refusal at join. That is deliberately
+   undone, because it made adoption impossible two ways over: the
+   server compares one opaque number and cannot tell "different driver
+   build" - never adoptable - from "different DIP" - adoptable; and a
+   guest cannot adopt before computing the digest it joins with,
+   because no peer channel exists before the session does.
+
+   So the handshake keeps enforcing what can never be reconciled -
+   driver, ROM set, input map structure, savestate layout - and the
+   peers settle configuration between themselves. The server needs no
+   policy and no new field; JOIN did not have to grow, which it could
+   not have done without a protocol bump, being exactly full at 32
+   bytes.
+
+   The cost is that a mismatch is caught a frame or two into the
+   session rather than at join. The guest says what differs and exits.
+
+3.13.2.  Adoption is verified, not assumed
+
+   The guest applies the records through ioport_field::
+   set_user_settings - the same entry point MAME's own UI uses, and the
+   only sanctioned one, since analog_field keeps its live members
+   private and names that function as its friend. Then it recomputes
+   its own config digest and compares.
+
+   That comparison is the point. If anything did not take - a field the
+   host does not have, a setting that refused to move - the peers would
+   otherwise run on quietly diverging, which is exactly what this is
+   for. A failed verify exits rather than plays.
+
+   IN MEMORY ONLY. Nothing writes the cfg file, so joining somebody's
+   game cannot permanently change this machine's DIP switches.
+
+   Key bindings are never sent or overwritten. They do not affect the
+   word that goes on the wire - injection replaces the port value
+   regardless - so there is no reason to touch somebody's controls.
+
+3.13.3.  Measured
+
+   arkanoid, guest joining with Lives on a different DIP setting and
+   the P1 dial at sensitivity 60 against the host's 30:
+
+   o sharing on: the guest reported both differences by name,
+     ":DSW:Lives ours 0 -> host 32" and ":P1:Dial sensitivity 60 ->
+     30", adopted two settings, recomputed its digest to match, and
+     the session held 593 frames with nothing differing
+   o sharing off: the host announced the digest alone, the guest
+     reported both digests and exited cleanly rather than playing
+
+   [verified]
+
+   WHAT IS NOT COVERED. A setting changed mid-session through the Tab
+   menu is not caught; that stays on the honour system. Nor is a driver
+   with more configuration than one datagram holds - over 56 fields the
+   host announces the digest alone and the guest refuses, because
+   sending PART of the settings would leave it agreeing about some
+   switches and not others. [open] chunk it like a resync
 
 4.  Handshake
 

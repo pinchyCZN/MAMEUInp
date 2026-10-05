@@ -78,6 +78,9 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_batch(batch)
 	, m_depth(1)
 	, m_savestates(true)
+	, m_send_config(true)
+	, m_config_done(false)
+	, m_config_checked(false)
 	, m_need(0)
 	, m_pending(0)
 	, m_echo(0)
@@ -224,6 +227,13 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 			|| !((std::strcmp(ss, "0") == 0)
 				|| (std::strcmp(ss, "off") == 0)
 				|| (std::strcmp(ss, "no") == 0));
+
+	// Sending configuration is on unless turned off.
+	const char *sc = std::getenv("NETPLAY_SEND_CONFIG");
+	m_send_config = unset(sc)
+			|| !((std::strcmp(sc, "0") == 0)
+				|| (std::strcmp(sc, "off") == 0)
+				|| (std::strcmp(sc, "no") == 0));
 
 	// SNAPSHOT PERIOD, IN SECONDS, HELD IN FRAMES. Seconds is what a
 	// player means; frames is what the interval has to be measured in,
@@ -762,6 +772,19 @@ void manager::poll_link()
 		{
 			if (said_no != m_local)
 				take_nak(nk_about, nk_reason);
+			continue;
+		}
+
+		player_t cfg_from = 0;
+		u64 cfg_digest = 0;
+		u16 cfg_flags = 0;
+		unsigned cfg_count = 0;
+		config_rec cfg_recs[CONFIG_MAX_FIELDS];
+		if (parse_config(buf, len, cfg_from, cfg_digest, cfg_flags,
+				cfg_recs, CONFIG_MAX_FIELDS, cfg_count))
+		{
+			if (cfg_from != m_local)
+				take_config(cfg_digest, cfg_flags, cfg_recs, cfg_count);
 			continue;
 		}
 
@@ -1391,6 +1414,164 @@ void manager::apply_resync()
 	m_machine.popmessage("Resynced - catching up %d frames",
 			int(was - from));
 }
+
+//-------------------------------------------------
+//  configuration: the host's settings
+//-------------------------------------------------
+
+void manager::send_config()
+{
+	if (!m_link)
+		return;
+
+	// THE DIGEST TRAVELS EVEN WHEN THE VALUES DO NOT. A host told not to
+	// send configuration still has to say what its configuration IS, or
+	// a guest set up differently has no way to find out and plays on
+	// desynced - which is the failure this whole message exists to stop.
+	config_rec recs[CONFIG_MAX_FIELDS];
+	unsigned count = 0;
+	u16 flags = 0;
+
+	if (m_send_config)
+	{
+		count = inputmap::collect_config(m_machine, recs, CONFIG_MAX_FIELDS);
+		flags = CONFIG_HAS_VALUES;
+
+		// More configuration than one datagram holds. collect_config caps
+		// what it writes, so a full buffer is the only signal available and
+		// it is treated as truncated whether it was or not - a driver with
+		// exactly the limit loses nothing but the values, and the digest
+		// still protects it.
+		//
+		// Sending PART of the settings is the one thing not to do: the
+		// guest would agree about some switches and not others, which is
+		// worse than not trying. [open] chunk it like a resync
+		if (count >= CONFIG_MAX_FIELDS)
+		{
+			osd_printf_info("netplay: %s has more than %u config fields, sending the digest only\n",
+					m_machine.system().name, CONFIG_MAX_FIELDS);
+			count = 0;
+			flags = 0;
+		}
+	}
+
+	u8 buf[MAX_DATAGRAM];
+	const size_t len = build_config(buf, sizeof(buf), 0, m_frame, m_local,
+			m_map.config_digest(), flags, recs, count);
+	if (len == 0)
+		return;
+
+	m_link->send(buf, len);
+	osd_printf_info("netplay: sent config digest %016llx%s\n",
+			static_cast<unsigned long long>(m_map.config_digest()),
+			(count != 0) ? " with values" : " only");
+}
+
+
+void manager::take_config(u64 digest, u16 flags, const config_rec *recs,
+		unsigned count)
+{
+	// Once per session. A repeat would re-apply settings a player may
+	// have deliberately changed since.
+	if (m_config_checked)
+		return;
+	m_config_checked = true;
+
+	if (digest == m_map.config_digest())
+	{
+		osd_printf_info("netplay: config matches the host\n");
+		return;
+	}
+
+	if ((flags & CONFIG_HAS_VALUES) == 0)
+	{
+		// The host is not sharing settings and ours differ. Nothing can
+		// reconcile that here, and playing on would desync every frame
+		// with nothing in any log to explain it.
+		osd_printf_info("netplay: config differs from the host and the host is not sharing it\n");
+		osd_printf_info("netplay:   ours %016llx, host %016llx\n",
+				static_cast<unsigned long long>(m_map.config_digest()),
+				static_cast<unsigned long long>(digest));
+		m_machine.popmessage(
+				"DIP or analog settings differ from the host - cannot play");
+		m_machine.schedule_exit();
+		return;
+	}
+
+	// WHAT CHANGED, BY NAME. A digest says the two peers disagree and
+	// nothing about what; both run the same driver, so the field names
+	// are available locally and worth printing.
+	config_rec mine[CONFIG_MAX_FIELDS];
+	const unsigned n = inputmap::collect_config(m_machine, mine,
+			CONFIG_MAX_FIELDS);
+	for (unsigned i = 0; i < count; i++)
+	{
+		for (unsigned j = 0; j < n; j++)
+		{
+			if (mine[j].index != recs[i].index)
+				continue;
+			if ((mine[j].value == recs[i].value)
+					&& (mine[j].flags == recs[i].flags)
+					&& (mine[j].sensitivity == recs[i].sensitivity)
+					&& (mine[j].delta == recs[i].delta)
+					&& (mine[j].centerdelta == recs[i].centerdelta))
+				break;
+
+			std::string tag;
+			const char *const nm = inputmap::config_field_name(m_machine,
+					recs[i].index, tag);
+			const char *const label = (nm != nullptr) ? nm : "?";
+
+			// An analog field whose VALUE matches but whose sensitivity does
+			// not would otherwise print "ours 0 -> host 0", which reads as no
+			// difference at all. Say which number moved.
+			if ((recs[i].flags & CONFIG_REC_ANALOG) != 0)
+			{
+				osd_printf_info("netplay:   %s:%s  sensitivity %d -> %d,"
+						" keydelta %d -> %d, centerdelta %d -> %d,"
+						" reverse %d -> %d\n",
+						tag.c_str(), label,
+						int(mine[j].sensitivity), int(recs[i].sensitivity),
+						int(mine[j].delta), int(recs[i].delta),
+						int(mine[j].centerdelta), int(recs[i].centerdelta),
+						((mine[j].flags & CONFIG_REC_REVERSE) != 0) ? 1 : 0,
+						((recs[i].flags & CONFIG_REC_REVERSE) != 0) ? 1 : 0);
+			}
+			else
+			{
+				osd_printf_info("netplay:   %s:%s  ours %u -> host %u\n",
+						tag.c_str(), label,
+						unsigned(mine[j].value), unsigned(recs[i].value));
+			}
+			break;
+		}
+	}
+
+	const unsigned changed =
+			inputmap::apply_config(m_machine, recs, count);
+
+	// PROVE IT, DO NOT ASSUME IT. Recomputing and comparing is what makes
+	// adoption safe: if anything did not take - a field the host does not
+	// have, a setting that refused to move - the two peers would run on
+	// quietly diverging, which is the outcome this exists to prevent.
+	const u64 now = m_map.recompute_config_digest(m_machine);
+	if (now != digest)
+	{
+		osd_printf_info("netplay: adopted %u setting(s) and still differ: %016llx vs %016llx\n",
+				changed, static_cast<unsigned long long>(now),
+				static_cast<unsigned long long>(digest));
+		m_machine.popmessage(
+				"Could not match the host's settings - cannot play");
+		m_machine.schedule_exit();
+		return;
+	}
+
+	osd_printf_info("netplay: adopted %u setting(s) from the host, config now matches\n", changed);
+	if (changed != 0)
+		m_machine.popmessage("Adopted %d setting(s) from the host",
+				int(changed));
+}
+
 
 //-------------------------------------------------
 //  refusing a request, and being refused
@@ -2288,6 +2469,15 @@ void manager::frame_end(running_machine &machine)
 		m->m_snap_pending = true;
 	}
 
+	// ANNOUNCED ONCE THE SESSION IS LIVE, by the host only. Before that
+	// there is nobody to tell; the server relays it like anything else.
+	if (!m->m_config_done && (m->m_local == 1)
+			&& m->m_link && m->m_link->ready())
+	{
+		m->m_config_done = true;
+		m->send_config();
+	}
+
 	// PUSH ONCE, AND ONLY AFTER THE SESSION IS LIVE. While gated the
 	// host is blocked inside this hook and never reaches a safe point, so
 	// a capture armed then would sit pending forever. do_capture already
@@ -2380,6 +2570,7 @@ void manager::write_status()
 	std::fprintf(f, "batch=%d\n", int(m_batch));
 	std::fprintf(f, "depth=%d\n", int(m_depth));
 	std::fprintf(f, "savestates=%d\n", m_savestates ? 1 : 0);
+	std::fprintf(f, "send_config=%d\n", m_send_config ? 1 : 0);
 	std::fprintf(f, "naks_sent=%llu\n",
 			static_cast<unsigned long long>(m_naks_sent));
 	std::fprintf(f, "naks_answered=%llu\n",

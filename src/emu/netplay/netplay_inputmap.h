@@ -32,6 +32,7 @@
 #pragma once
 
 #include "netplay/netplay_types.h"
+#include "netplay/netplay_packet.h"
 
 #include <string>
 #include <unordered_map>
@@ -70,6 +71,30 @@ public:
 	// the handshake refuses that, and exposed separately so a mismatch
 	// can be told apart from a structural one by comparing two logs.
 	u64 config_digest() const { return m_config_digest; }
+
+	// Recomputes it against the machine as it stands now. Needed after
+	// applying somebody else's settings, to prove the two peers agree
+	// rather than hoping they do.
+	u64 recompute_config_digest(running_machine &machine);
+
+	// The settings that are configuration rather than play: DIP
+	// switches, config settings and anything analog. Collected and
+	// applied in one canonical order - ports in tag order, fields in
+	// declaration order - so a position identifies a field and no tag
+	// strings need to travel. The structural digest the handshake
+	// enforces is what makes that ordering agree between peers.
+	static unsigned collect_config(running_machine &machine,
+			config_rec *out, unsigned max);
+
+	// Writes them into the live machine. Reports how many it changed, so
+	// a caller can say nothing happened rather than claim it did.
+	static unsigned apply_config(running_machine &machine,
+			const config_rec *recs, unsigned count);
+
+	// Names the field at a canonical index, for a diff a human can read.
+	// nullptr past the end.
+	static const char *config_field_name(running_machine &machine,
+			unsigned index, std::string &tag);
 
 	player_t players() const { return m_players; }
 	unsigned digital_used() const { return unsigned(m_logical.size()); }

@@ -56,7 +56,8 @@ enum msg_type : u8
 	MSG_BYE     = 0x0b,
 	MSG_UICMD   = 0x0c,
 	MSG_RESYNC_REQ = 0x0d,
-	MSG_NAK     = 0x0e
+	MSG_NAK     = 0x0e,
+	MSG_CONFIG  = 0x0f
 };
 
 // 3.4
@@ -313,6 +314,49 @@ enum nak_reason : u8
 };
 
 const char *nak_text(u8 reason);
+
+// CONFIG. One record per field whose value is configuration rather than
+// play: DIP switches, config settings and anything analog. 20 bytes
+// each, and the count is bounded so the whole thing is one datagram -
+// (MAX_DATAGRAM - CONFIG_HEAD_BYTES) / 20 is 58, so 56 leaves room.
+constexpr size_t CONFIG_REC_BYTES = 20;
+constexpr unsigned CONFIG_MAX_FIELDS = 56;
+constexpr size_t CONFIG_HEAD_BYTES = HEADER_BYTES + 12;
+
+// FIELDS ARE IDENTIFIED BY POSITION, NOT BY NAME OR MASK. Both peers
+// walk machine.ioport().ports() - an ordered map, so the same order
+// everywhere - and each port's fields in declaration order, selecting
+// the same kinds. The structural digest the handshake already enforces
+// is what guarantees those two walks produce the same sequence, so an
+// ordinal is enough and no tag strings go on the wire.
+struct config_rec
+{
+	u16     index;
+	u16     flags;             // CONFIG_REC_*
+	u32     value;             // field.live().value, masked
+	s32     sensitivity;       // analog only
+	s32     delta;
+	s32     centerdelta;
+};
+
+enum config_rec_flag : u16
+{
+	CONFIG_REC_TOGGLE  = 0x0001,
+	CONFIG_REC_REVERSE = 0x0002,
+	CONFIG_REC_ANALOG  = 0x0004
+};
+
+// Set when the datagram carries values and not just the digest. A host
+// that is told not to send configuration still announces its digest, so
+// a guest can tell it apart and refuse instead of playing on desynced.
+constexpr u16 CONFIG_HAS_VALUES = 0x0001;
+
+// CONFIG - the host's settings, or just the digest of them.
+size_t build_config(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, u64 digest, u16 flags, const config_rec *recs,
+		unsigned count);
+bool parse_config(const u8 *buf, size_t len, player_t &from, u64 &digest,
+		u16 &flags, config_rec *recs, unsigned max, unsigned &count);
 const char *uicmd_text(u8 cmd);
 
 // ---- resync ----
@@ -351,6 +395,7 @@ constexpr size_t CHAT_MAX_TEXT = 128;
 
 constexpr size_t STALL_BYTES = HEADER_BYTES + 4;
 constexpr size_t NAK_BYTES = HEADER_BYTES + 4;
+
 
 // The most words any one datagram can carry, derived rather than picked:
 // a receiver sized by this cannot be overrun by a legal packet, and a
