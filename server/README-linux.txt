@@ -6,7 +6,7 @@ MAMEUI Netplay                                            Relay Server
 
 Abstract
 
-   The relay server is a standalone UDP program. It shares only the
+   The relay server is a standalone program. It shares only the
    wire format with the emulator and needs nothing from MAME, so it
    builds on a small VPS in seconds.
 
@@ -93,11 +93,16 @@ Table of Contents
 
 5.  Opening the port
 
-   IT IS UDP. A rule written for TCP passes nothing and looks correct
-   while doing it. Both layers have to allow it:
+   BOTH PROTOCOLS ON THE ONE PORT NUMBER. The game relay is UDP; the
+   lobby is a separate TCP listener on the same number. Allowing one
+   and not the other looks correct and half works - UDP only gives a
+   playable game that no lobby can reach, TCP only gives a lobby that
+   cannot start a game.
 
-   o the host firewall - ufw allow 7000/udp, or the nftables
-     equivalent
+   Both layers have to allow both:
+
+   o the host firewall - ufw allow 7000/udp and ufw allow 7000/tcp,
+     or the nftables equivalent
    o the provider's own firewall or security group, which is separate
      from the host and is the usual reason a correct ufw rule still
      drops everything
@@ -105,6 +110,7 @@ Table of Contents
    Confirm from your own machine before blaming the game:
 
        nc -u -z -v <host> 7000
+       nc -z -v <host> 7000
 
 6.  Pointing the peers at it
 

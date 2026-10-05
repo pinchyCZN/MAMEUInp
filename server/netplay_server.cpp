@@ -77,6 +77,48 @@ namespace {
 
 constexpr unsigned DEFAULT_PORT = 7000;
 
+// Lobby. TCP on the same port number as the relay's UDP - different
+// protocol, so they do not collide, and one port to remember.
+constexpr unsigned MAX_LOBBY = 16;
+constexpr size_t LOBBY_LINE = 512;
+
+struct lobby_client
+{
+	// Initialised here, not in relay's constructor: an uninitialised
+	// `used` puts garbage handles in the fd_set and select then fails
+	// every iteration, which looks like a server that accepts nothing.
+	bool        used = false;
+	np_socket   sock = NP_INVALID_SOCKET;
+	std::string name;
+	std::string in;        // partial line
+};
+
+// The hosted game. One at a time: the relay serves one session, so a
+// second game would have nowhere to run.
+struct lobby_game
+{
+	bool        active = false;
+	std::string driver;
+	unsigned    players = 2;
+	unsigned    delay = 6;
+	unsigned    batch = 1;
+	bool        savestates = true;
+	bool        send_config = true;
+
+	// Lobby indices in slot order: roster[0] is the host and player 1.
+	// Slot order is the point - the server seats each emulator in the
+	// slot its LAUNCH named.
+	int         roster[MAX_PLAYERS];
+	unsigned    count = 0;
+
+	lobby_game()
+	{
+		for (unsigned i = 0; i < MAX_PLAYERS; i++)
+			roster[i] = -1;
+	}
+};
+
+
 // A peer that has said nothing for this long is gone. Input flows every
 // frame in a live session, so silence this long is not jitter.
 constexpr time_t CLIENT_TIMEOUT = 15;
@@ -143,6 +185,29 @@ public:
 	void run();
 
 private:
+	bool open_lobby(unsigned port);
+	void lobby_accept();
+	void lobby_read(unsigned i);
+	void lobby_drop(unsigned i, const char *why);
+	void lobby_line(unsigned i, const std::string &line);
+	void lobby_send(unsigned i, const std::string &line);
+	void lobby_broadcast(const std::string &line);
+	void lobby_players();
+	void lobby_game_state(int only = -1);
+	void lobby_game_drop(unsigned i);
+	void lobby_create(unsigned i, const std::string &arg);
+	void lobby_join(unsigned i);
+	void lobby_leave(unsigned i);
+	void lobby_start(unsigned i);
+	int  lobby_in_game(unsigned i) const;
+
+	np_socket       m_tcp = NP_INVALID_SOCKET;
+	lobby_client    m_lobby[MAX_LOBBY];
+	lobby_game      m_game;
+
+public:
+
+private:
 	void on_join(const struct sockaddr_in &from, const u8 *buf, size_t len);
 	void on_input(const struct sockaddr_in &from, const u8 *buf, size_t len);
 	void send_to(const struct sockaddr_in &to, const u8 *buf, size_t len);
@@ -195,6 +260,13 @@ bool relay::open()
 
 	std::printf("netplay server: port %u, %d players, session %u\n",
 			m_port, int(m_players), unsigned(m_session));
+
+	// The lobby is optional: a relay with no lobby still runs games.
+	if (open_lobby(m_port))
+		std::printf("lobby: TCP %u, up to %u players\n", m_port, MAX_LOBBY);
+	else
+		std::printf("lobby: TCP %u unavailable, relay only\n", m_port);
+
 	return true;
 }
 
@@ -306,13 +378,33 @@ void relay::on_join(const struct sockaddr_in &from, const u8 *buf, size_t len)
 		}
 	}
 
+	// A client that names a slot is placed there or refused. Picking the
+	// lowest free slot instead would silently seat two peers that were
+	// both configured as player 1, and the client keeps its configured
+	// slot regardless of what WELCOME says - so both would send as
+	// player 1 and nobody would see player 2.
 	unsigned slot = MAX_PLAYERS;
-	for (unsigned i = 0; i < m_players; i++)
-		if (!m_client[i].used)
+	if ((jp.slot >= 1) && (jp.slot <= m_players))
+	{
+		if (m_client[jp.slot - 1].used)
 		{
-			slot = i;
-			break;
+			refuse(from, REFUSE_SLOT);
+			return;
 		}
+		slot = jp.slot - 1;
+	}
+	else
+	{
+		// Slot 0 means no preference. An out-of-range slot is treated the
+		// same way rather than refused, so a peer asking for player 3 of a
+		// 2-player session still gets a game.
+		for (unsigned i = 0; i < m_players; i++)
+			if (!m_client[i].used)
+			{
+				slot = i;
+				break;
+			}
+	}
 	if (slot >= MAX_PLAYERS)
 	{
 		refuse(from, REFUSE_FULL);
@@ -429,6 +521,493 @@ void relay::sweep()
 }
 
 
+bool relay::open_lobby(unsigned port)
+{
+	m_tcp = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (m_tcp == NP_INVALID_SOCKET)
+		return false;
+
+	int on = 1;
+	setsockopt(m_tcp, SOL_SOCKET, SO_REUSEADDR,
+			reinterpret_cast<const char *>(&on), sizeof(on));
+
+	struct sockaddr_in a;
+	std::memset(&a, 0, sizeof(a));
+	a.sin_family = AF_INET;
+	a.sin_addr.s_addr = htonl(INADDR_ANY);
+	a.sin_port = htons(u16(port));
+
+	if (bind(m_tcp, reinterpret_cast<struct sockaddr *>(&a), sizeof(a)) != 0)
+	{
+		NP_CLOSESOCKET(m_tcp);
+		m_tcp = NP_INVALID_SOCKET;
+		return false;
+	}
+	if (listen(m_tcp, 8) != 0)
+	{
+		NP_CLOSESOCKET(m_tcp);
+		m_tcp = NP_INVALID_SOCKET;
+		return false;
+	}
+	return true;
+}
+
+
+void relay::lobby_send(unsigned i, const std::string &line)
+{
+	if (!m_lobby[i].used)
+		return;
+
+	const std::string out = line + "\n";
+	send(m_lobby[i].sock, out.c_str(), int(out.size()), 0);
+}
+
+
+void relay::lobby_broadcast(const std::string &line)
+{
+	for (unsigned i = 0; i < MAX_LOBBY; i++)
+		if (m_lobby[i].used && !m_lobby[i].name.empty())
+			lobby_send(i, line);
+}
+
+
+void relay::lobby_players()
+{
+	std::string list = "PLAYERS ";
+	bool first = true;
+	for (unsigned i = 0; i < MAX_LOBBY; i++)
+	{
+		if (!m_lobby[i].used || m_lobby[i].name.empty())
+			continue;
+		if (!first)
+			list += ",";
+		list += m_lobby[i].name;
+		first = false;
+	}
+	lobby_broadcast(list);
+}
+
+
+void relay::lobby_drop(unsigned i, const char *why)
+{
+	if (!m_lobby[i].used)
+		return;
+
+	const std::string who = m_lobby[i].name;
+
+	// Before the entry is cleared: the roster holds lobby indices and
+	// resolves names through them.
+	lobby_game_drop(i);
+
+	NP_CLOSESOCKET(m_lobby[i].sock);
+	m_lobby[i] = lobby_client();
+
+	if (!who.empty())
+	{
+		std::printf("  lobby: %s left (%s)\n", who.c_str(), why);
+		lobby_players();
+	}
+}
+
+
+void relay::lobby_accept()
+{
+	struct sockaddr_in from;
+	np_socklen len = sizeof(from);
+	const np_socket c = accept(m_tcp,
+			reinterpret_cast<struct sockaddr *>(&from), &len);
+	if (c == NP_INVALID_SOCKET)
+		return;
+
+	for (unsigned i = 0; i < MAX_LOBBY; i++)
+	{
+		if (m_lobby[i].used)
+			continue;
+		m_lobby[i].used = true;
+		m_lobby[i].sock = c;
+		m_lobby[i].name.clear();
+		m_lobby[i].in.clear();
+		return;
+	}
+
+	// Full. Say so rather than dropping silently.
+	const char *const full = "ERROR lobby full\n";
+	send(c, full, int(std::strlen(full)), 0);
+	NP_CLOSESOCKET(c);
+}
+
+
+//-------------------------------------------------
+//  the hosted game
+//-------------------------------------------------
+
+// "delay=6" -> 6, or fallback if the key is absent or unparsable.
+static unsigned kv(const std::string &s, const char *key, unsigned fallback)
+{
+	const std::string want = std::string(key) + "=";
+	size_t at = s.find(want);
+	while (at != std::string::npos)
+	{
+		// Must start the string or follow a space, so "config=" does not
+		// match inside "sendconfig=".
+		if ((at == 0) || (s[at - 1] == ' '))
+			return unsigned(std::atoi(s.c_str() + at + want.size()));
+		at = s.find(want, at + 1);
+	}
+	return fallback;
+}
+
+
+int relay::lobby_in_game(unsigned i) const
+{
+	if (!m_game.active)
+		return -1;
+	for (unsigned k = 0; k < m_game.count; k++)
+		if (m_game.roster[k] == int(i))
+			return int(k);
+	return -1;
+}
+
+
+// only >= 0 sends to that one client instead of broadcasting, for a client
+// that has just connected and needs the current state.
+void relay::lobby_game_state(int only)
+{
+	if (!m_game.active)
+	{
+		if (only >= 0)
+			lobby_send(unsigned(only), "NOGAME");
+		else
+			lobby_broadcast("NOGAME");
+		return;
+	}
+
+	char buf[256];
+	std::snprintf(buf, sizeof(buf),
+			"GAME %s host=%s %u/%u delay=%u batch=%u savestates=%u config=%u",
+			m_game.driver.c_str(),
+			m_lobby[m_game.roster[0]].name.c_str(),
+			m_game.count, m_game.players,
+			m_game.delay, m_game.batch,
+			m_game.savestates ? 1u : 0u,
+			m_game.send_config ? 1u : 0u);
+
+	std::string roster("ROSTER ");
+	for (unsigned k = 0; k < m_game.count; k++)
+	{
+		if (k != 0)
+			roster += ",";
+		roster += m_lobby[m_game.roster[k]].name;
+	}
+
+	if (only >= 0)
+	{
+		lobby_send(unsigned(only), buf);
+		lobby_send(unsigned(only), roster);
+	}
+	else
+	{
+		lobby_broadcast(buf);
+		lobby_broadcast(roster);
+	}
+}
+
+
+// Called when a client leaves for any reason, including disconnecting.
+void relay::lobby_game_drop(unsigned i)
+{
+	const int k = lobby_in_game(i);
+	if (k < 0)
+		return;
+
+	if (k == 0)
+	{
+		// The host leaving ends the game. Reseating somebody else as host
+		// would hand them settings they did not choose.
+		std::printf("  lobby: game %s cancelled (host left)\n",
+				m_game.driver.c_str());
+		m_game = lobby_game();
+		lobby_game_state();
+		return;
+	}
+
+	for (unsigned j = unsigned(k); (j + 1) < m_game.count; j++)
+		m_game.roster[j] = m_game.roster[j + 1];
+	m_game.roster[m_game.count - 1] = -1;
+	m_game.count--;
+	lobby_game_state();
+}
+
+
+void relay::lobby_create(unsigned i, const std::string &arg)
+{
+	if (m_game.active)
+	{
+		lobby_send(i, "ERROR a game is already hosted");
+		return;
+	}
+
+	// The relay serves one session. Changing the player count under a live
+	// one would leave it waiting for a number of peers nobody agreed to.
+	if (m_started || (m_joined > 0))
+	{
+		lobby_send(i, "ERROR a session is already running");
+		return;
+	}
+
+	const size_t sp = arg.find(' ');
+	const std::string driver = arg.substr(0, sp);
+	if (driver.empty() || (driver.size() > 14))
+	{
+		lobby_send(i, "ERROR bad system name");
+		return;
+	}
+
+	const unsigned players = kv(arg, "players", 2);
+	const unsigned delay = kv(arg, "delay", 6);
+	const unsigned batch = kv(arg, "batch", 1);
+	if ((players < 2) || (players > MAX_PLAYERS))
+	{
+		lobby_send(i, "ERROR players must be 2 to "
+				+ std::to_string(unsigned(MAX_PLAYERS)));
+		return;
+	}
+	if ((delay < 1) || (delay > 60))
+	{
+		lobby_send(i, "ERROR delay must be 1 to 60");
+		return;
+	}
+	if ((batch < 1) || (batch > 8))
+	{
+		lobby_send(i, "ERROR batch must be 1 to 8");
+		return;
+	}
+
+	m_game = lobby_game();
+	m_game.active = true;
+	m_game.driver = driver;
+	m_game.players = players;
+	m_game.delay = delay;
+	m_game.batch = batch;
+	m_game.savestates = (kv(arg, "savestates", 1) != 0);
+	m_game.send_config = (kv(arg, "config", 1) != 0);
+	m_game.roster[0] = int(i);
+	m_game.count = 1;
+
+	m_players = player_t(players);
+
+	std::printf("  lobby: %s hosts %s for %u player(s), delay %u batch %u\n",
+			m_lobby[i].name.c_str(), driver.c_str(), players, delay, batch);
+	lobby_game_state();
+}
+
+
+void relay::lobby_join(unsigned i)
+{
+	if (!m_game.active)
+	{
+		lobby_send(i, "ERROR no game is hosted");
+		return;
+	}
+	if (lobby_in_game(i) >= 0)
+	{
+		lobby_send(i, "ERROR you are already in the game");
+		return;
+	}
+	if (m_game.count >= m_game.players)
+	{
+		lobby_send(i, "ERROR the game is full");
+		return;
+	}
+
+	m_game.roster[m_game.count] = int(i);
+	m_game.count++;
+	std::printf("  lobby: %s joined %s as player %u\n",
+			m_lobby[i].name.c_str(), m_game.driver.c_str(), m_game.count);
+	lobby_game_state();
+}
+
+
+void relay::lobby_leave(unsigned i)
+{
+	if (lobby_in_game(i) < 0)
+	{
+		lobby_send(i, "ERROR you are not in the game");
+		return;
+	}
+	std::printf("  lobby: %s left the game\n", m_lobby[i].name.c_str());
+	lobby_game_drop(i);
+}
+
+
+void relay::lobby_start(unsigned i)
+{
+	if (!m_game.active)
+	{
+		lobby_send(i, "ERROR no game is hosted");
+		return;
+	}
+	if (lobby_in_game(i) != 0)
+	{
+		lobby_send(i, "ERROR only the host can start");
+		return;
+	}
+
+	// The relay starts the UDP session when m_players have joined, so
+	// starting short would leave everyone waiting on a peer who was never
+	// coming.
+	if (m_game.count < m_game.players)
+	{
+		lobby_send(i, "ERROR waiting for "
+				+ std::to_string(m_game.players - m_game.count)
+				+ " more player(s)");
+		return;
+	}
+
+	std::printf("  lobby: starting %s\n", m_game.driver.c_str());
+	for (unsigned k = 0; k < m_game.count; k++)
+	{
+		char buf[256];
+		std::snprintf(buf, sizeof(buf),
+				"LAUNCH game=%s slot=%u players=%u delay=%u batch=%u"
+				" savestates=%u config=%u",
+				m_game.driver.c_str(), k + 1, m_game.players,
+				m_game.delay, m_game.batch,
+				m_game.savestates ? 1u : 0u,
+				m_game.send_config ? 1u : 0u);
+		lobby_send(unsigned(m_game.roster[k]), buf);
+	}
+
+	// The game record has done its job; the UDP relay runs the session from
+	// here. Keeping it would block the next game, because every member is
+	// about to disconnect from the lobby to launch.
+	m_game = lobby_game();
+	lobby_game_state();
+}
+
+
+void relay::lobby_line(unsigned i, const std::string &line)
+{
+	const size_t sp = line.find(' ');
+	const std::string cmd = line.substr(0, sp);
+	const std::string arg = (sp == std::string::npos)
+			? std::string() : line.substr(sp + 1);
+
+	if (cmd == "HELLO")
+	{
+		std::string want = arg.empty() ? std::string("player") : arg;
+		if (want.size() > 24)
+			want.resize(24);
+
+		// De-duplicate rather than refuse: a name clash mid-dialog is a
+		// worse experience than being renamed.
+		std::string name = want;
+		for (unsigned n = 2; n < 100; n++)
+		{
+			bool taken = false;
+			for (unsigned j = 0; j < MAX_LOBBY; j++)
+				if ((j != i) && m_lobby[j].used && (m_lobby[j].name == name))
+					taken = true;
+			if (!taken)
+				break;
+			name = want + "_" + std::to_string(n);
+		}
+
+		m_lobby[i].name = name;
+		std::printf("  lobby: %s joined\n", name.c_str());
+		lobby_send(i, "YOUARE " + name);
+		lobby_players();
+		lobby_game_state(int(i));
+		return;
+	}
+
+	if (m_lobby[i].name.empty())
+	{
+		lobby_send(i, "ERROR say HELLO first");
+		return;
+	}
+
+	if (cmd == "CHAT")
+	{
+		if (!arg.empty())
+			lobby_broadcast("CHAT " + m_lobby[i].name + " " + arg);
+		return;
+	}
+
+	if (cmd == "CREATE")
+	{
+		lobby_create(i, arg);
+		return;
+	}
+
+	if (cmd == "JOIN")
+	{
+		lobby_join(i);
+		return;
+	}
+
+	if (cmd == "LEAVE")
+	{
+		lobby_leave(i);
+		return;
+	}
+
+	if (cmd == "START")
+	{
+		lobby_start(i);
+		return;
+	}
+
+	if (cmd == "BYE")
+	{
+		lobby_drop(i, "said bye");
+		return;
+	}
+
+	lobby_send(i, "ERROR unknown command " + cmd);
+}
+
+
+void relay::lobby_read(unsigned i)
+{
+	char buf[LOBBY_LINE];
+	const int n = recv(m_lobby[i].sock, buf, int(sizeof(buf)), 0);
+	if (n <= 0)
+	{
+		lobby_drop(i, "disconnected");
+		return;
+	}
+
+	m_lobby[i].in.append(buf, size_t(n));
+
+	// A client that never sends a newline must not grow this forever.
+	if (m_lobby[i].in.size() > (LOBBY_LINE * 4))
+	{
+		lobby_drop(i, "line too long");
+		return;
+	}
+
+	for ( ; ; )
+	{
+		const size_t nl = m_lobby[i].in.find('\n');
+		if (nl == std::string::npos)
+			break;
+
+		std::string line = m_lobby[i].in.substr(0, nl);
+		m_lobby[i].in.erase(0, nl + 1);
+		if (!line.empty() && (line[line.size() - 1] == '\r'))
+			line.resize(line.size() - 1);
+
+		if (!line.empty())
+		{
+			lobby_line(i, line);
+			if (!m_lobby[i].used)
+				return;         // dropped itself
+		}
+	}
+}
+
+
 void relay::run()
 {
 	u8 buf[MAX_DATAGRAM];
@@ -441,13 +1020,39 @@ void relay::run()
 		FD_ZERO(&rd);
 		FD_SET(m_sock, &rd);
 
+		np_socket maxfd = m_sock;
+		if (m_tcp != NP_INVALID_SOCKET)
+		{
+			FD_SET(m_tcp, &rd);
+			if (m_tcp > maxfd)
+				maxfd = m_tcp;
+		}
+		for (unsigned i = 0; i < MAX_LOBBY; i++)
+		{
+			if (!m_lobby[i].used)
+				continue;
+			FD_SET(m_lobby[i].sock, &rd);
+			if (m_lobby[i].sock > maxfd)
+				maxfd = m_lobby[i].sock;
+		}
+
 		struct timeval tv;
 		tv.tv_sec = 1;
 		tv.tv_usec = 0;
 
-		const int ready = select(int(m_sock) + 1, &rd, nullptr, nullptr, &tv);
+		const int ready = select(int(maxfd) + 1, &rd, nullptr, nullptr, &tv);
 		sweep();
 		if (ready <= 0)
+			continue;
+
+		if ((m_tcp != NP_INVALID_SOCKET) && FD_ISSET(m_tcp, &rd))
+			lobby_accept();
+
+		for (unsigned i = 0; i < MAX_LOBBY; i++)
+			if (m_lobby[i].used && FD_ISSET(m_lobby[i].sock, &rd))
+				lobby_read(i);
+
+		if (!FD_ISSET(m_sock, &rd))
 			continue;
 
 		struct sockaddr_in from;

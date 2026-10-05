@@ -189,40 +189,109 @@ Table of Contents
    TCP channel, player names, chat. No game concept yet: connecting
    shows who else is connected and lets them talk.
 
+   The lobby is what File -> Netplay opens; the phase 1 dialog is
+   behind its Direct connect button. Choosing Direct connect leaves
+   the lobby - it sends BYE, closes the socket and returns the launch
+   to winui.cpp, which is where MamePlayGameWithOptions lives.
+
+   The client is a non-blocking socket polled from WM_TIMER at 100 ms
+   rather than a thread, so every socket touch is on the UI thread and
+   there is nothing to synchronise. WSAStartup is called without a
+   matching WSACleanup: Winsock is reference counted and the emulator
+   shares it in-process, so cleaning up here would pull it out from
+   under a running game.
+
+   The server listens on the same port NUMBER as the UDP relay, which
+   is a separate TCP socket and a separate firewall rule. A VPS that
+   allows UDP 7000 does not thereby allow TCP 7000.
+
 5.3.  Phase 3: host, join, start
 
-   Create a game, list it, join it, start it. The server grows a lobby
-   layer beside its relay. WELCOME starts carrying delay and batch.
+   Create a game, join it, start it. The lobby dialog grows a Game
+   panel: the system, the session settings, Host/Join/Leave/Start, and
+   a roster listview of who is in this game and in what slot.
+
+   THE HOST'S SETTINGS WIN. A guest never types delay, batch or player
+   count; they arrive in LAUNCH and the guest's controls only display
+   them. This is what makes the "delay must match" rule (3.1)
+   unbreakable through the lobby rather than merely documented.
+
+   The slot each player is given is the roster position, and LAUNCH
+   carries it. JOIN then names that slot on the wire - protocol.txt
+   4.2.2 - so the relay seats everyone where the lobby said.
+
+   WELCOME was to carry delay and batch here. It does not: LAUNCH
+   already tells the frontend both over TCP, and nothing reads the
+   delay out of WELCOME. The spare bytes stay spare.
 
 5.4.  Phase 4: the game picker
 
    The friendly list: the main window's listview, its filters and its
    audit data, in a page of the dialog.
 
-6.  The lobby protocol, sketched
+6.  The lobby protocol
 
-   Lines of text, request and response. Not settled; this is the shape.
+   Lines of text, LF terminated, client request and server response.
+   Everything through CHAT is implemented; CREATE onwards is phase 3
+   and is still a sketch.
 
        > HELLO pinchy
+       < YOUARE pinchy
        < PLAYERS pinchy,dave
-       < CHAT dave hello
-       > CREATE dino 2 delay=6 batch=1 savestates=1
-       < GAME dino host=pinchy 1/2 delay=6 savestates=1
+       > CHAT hello
+       < CHAT pinchy hello
+       > BYE
+       > CREATE dino players=2 delay=6 batch=1 savestates=1 config=1
+       < GAME dino host=pinchy 1/2 delay=6 batch=1 savestates=1 config=1
+       < ROSTER pinchy
        > JOIN
-       < GAME dino host=pinchy 2/2 delay=6 savestates=1
+       < GAME dino host=pinchy 2/2 delay=6 batch=1 savestates=1 config=1
+       < ROSTER pinchy,dave
+       > LEAVE
        > START
-       < LAUNCH session=7 slot=2 delay=6 batch=1 savestates=1
-       < ERROR not the host
+       < LAUNCH game=dino slot=2 players=2 delay=6 batch=1 savestates=1 config=1
+       < NOGAME
+       < ERROR only the host can start
 
-   START is the host's alone. LAUNCH is what every client turns into an
-   emulator launch.
+   START is the host's alone, and only once the roster is full: the
+   relay starts the session when the declared number of peers have
+   joined, so starting short leaves everyone waiting on a player who
+   is never coming.
+
+   LAUNCH is what every client turns into an emulator launch. It is
+   sent per-client because each one carries that client's own slot.
+   The server then forgets the game and broadcasts NOGAME: the relay
+   runs the session from there, and every member is about to leave the
+   lobby to play.
+
+   CREATE also sets the relay's player count for the session it is
+   about to serve, so it is refused while a session is running.
+
+   GAME and ROSTER are broadcast on every change and sent to each new
+   arrival. ROSTER is the authority on who is in and in what slot;
+   GAME's host= and n/m are for display.
+
+   The host leaving ends the game rather than promoting anyone:
+   handing a guest settings they did not choose is worse than making
+   somebody host again.
+
+   Three rules the implementation settled:
+
+   o  A client sends CHAT with no name; the server stamps the sender.
+      A client cannot speak as somebody else.
+   o  A duplicate name is suffixed, not refused - dave, then dave_2.
+      YOUARE reports the name actually assigned, so the client has to
+      take its name from the server rather than from its own edit box.
+   o  PLAYERS is sent unsolicited on every join and departure. There
+      is no poll.
 
 7.  Open questions
 
-   o Does the frontend hold the lobby connection while the emulator
-     runs? Holding it lets the server see the game end and keeps the
-     room alive; it also means the frontend is doing two things at
-     once.
+   o The frontend drops the lobby connection to launch, so the room
+     empties for the duration of a game and everyone has to reconnect
+     afterwards. Holding it would let the server see the game end and
+     keep the room alive; it also means the frontend is doing two
+     things at once.
    o Lobby chat and in-game chat are separate channels on separate
      transports. Bridging them is a nice thing and a deliberate one -
      the server would have to relay between the two.
@@ -230,4 +299,6 @@ Table of Contents
      today. Real MAME options would be tidier and would match how
      -netplay_hashlog was added, but it is a wider change than phase 1
      needs.
-   o Player names have no uniqueness rule yet.
+   o A lobby client is dropped on EOF or on any send error. A peer
+     that stops reading but holds the socket open is not detected;
+     there is no keepalive.

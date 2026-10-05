@@ -3946,18 +3946,19 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 	// process, so leaving it set would netplay the next ordinary game.
 	case ID_FILE_NETPLAY:
 		{
-			int nGame = Picker_GetSelectedItem(hwndList);
-			if (nGame < 0)
+			netplay_launch cfg;
+			if (!NetplayLobbyDialog(hMain, Picker_GetSelectedItem(hwndList), &cfg))
 				break;
 
-			netplay_launch cfg;
-			if (!NetplayDialog(hMain, nGame, &cfg))
+			// The game comes from the launch, not the list selection: a
+			// guest plays whatever the host picked.
+			if (cfg.game < 0)
 				break;
 
 			play_options playopts;
 			memset(&playopts, 0, sizeof(playopts));
 			NetplayApply(cfg);
-			MamePlayGameWithOptions(nGame, &playopts);
+			MamePlayGameWithOptions(cfg.game, &playopts);
 			NetplayClear();
 		}
 		break;

@@ -172,6 +172,7 @@ struct join_payload
 	u64     inputmap;
 	u64     layout;
 	u8      want_players;
+	u8      slot;              // 1-based, 0 = let the server choose
 	char    driver[14];        // NUL-padded, not NUL-terminated
 };
 
@@ -214,7 +215,8 @@ enum refuse_reason : u8
 	REFUSE_PERF     = 0x09,
 	REFUSE_FULL     = 0x0a,
 	REFUSE_RUNNING  = 0x0b,
-	REFUSE_TOOWIDE  = 0x0c
+	REFUSE_TOOWIDE  = 0x0c,
+	REFUSE_SLOT     = 0x0d
 };
 
 const char *refuse_text(u8 reason);

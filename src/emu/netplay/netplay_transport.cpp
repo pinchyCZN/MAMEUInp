@@ -371,6 +371,11 @@ void udp_link::identify(const char *driver, u64 inputmap_digest,
 	jp.inputmap = inputmap_digest;
 	jp.layout = layout_digest;
 	jp.want_players = want_players;
+	// Ask for the slot we were configured with. Without this the server
+	// hands out the lowest free one and two peers both set to player 1
+	// each send as player 1, which only shows up as a warning in the log.
+	jp.slot = u8(m_slot);
+
 	std::memset(jp.driver, 0, sizeof(jp.driver));
 	for (unsigned i = 0; (i < sizeof(jp.driver)) && (driver[i] != 0); i++)
 		jp.driver[i] = driver[i];

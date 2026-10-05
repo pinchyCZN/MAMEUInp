@@ -503,6 +503,33 @@
 #define IDC_NP_SENDCONFIG               2308
 #define IDC_NP_VERIFY                   2309
 #define IDC_NP_RESULT                   2310
+// NETPLAY: lobby
+#define IDD_NETPLAY_LOBBY               2320
+#define IDC_NPL_HOST                    2321
+#define IDC_NPL_PORT                    2322
+#define IDC_NPL_NAME                    2323
+#define IDC_NPL_CONNECT                 2324
+#define IDC_NPL_STATUS                  2325
+#define IDC_NPL_PLAYERS                 2326
+#define IDC_NPL_CHAT                    2327
+#define IDC_NPL_SAY                     2328
+#define IDC_NPL_DIRECT                  2329
+#define IDC_NPL_COUNT                   2330
+// NETPLAY: the hosted game, inside the lobby dialog
+#define IDC_NPG_DRIVER                  2331
+#define IDC_NPG_USESEL                  2332
+#define IDC_NPG_FULLNAME                2333
+#define IDC_NPG_PLAYERS                 2334
+#define IDC_NPG_DELAY                   2335
+#define IDC_NPG_BATCH                   2336
+#define IDC_NPG_SAVESTATES              2337
+#define IDC_NPG_SENDCONFIG              2338
+#define IDC_NPG_HOST                    2339
+#define IDC_NPG_JOIN                    2340
+#define IDC_NPG_LEAVE                   2341
+#define IDC_NPG_START                   2342
+#define IDC_NPG_ROSTER                  2343
+#define IDC_NPG_RESULT                  2344
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

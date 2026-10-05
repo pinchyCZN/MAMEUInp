@@ -9,6 +9,7 @@
 
 struct netplay_launch
 {
+	int         game;          // driver index, -1 if none
 	char        host[64];
 	unsigned    port;
 	unsigned    players;
@@ -20,7 +21,7 @@ struct netplay_launch
 };
 
 // Returns false if cancelled. nGame is the driver index, used for the
-// caption and the ROM check.
+// caption and the ROM check, and comes back in out->game.
 bool NetplayDialog(HWND hParent, int nGame, netplay_launch *out);
 
 // The emulator reads these from the environment, and MAMEUI runs it
@@ -28,5 +29,14 @@ bool NetplayDialog(HWND hParent, int nGame, netplay_launch *out);
 // game starts trying to netplay.
 void NetplayApply(const netplay_launch &cfg);
 void NetplayClear(void);
+
+// Phase 2: the lobby. Connect, see who else is here, chat. Starting a
+// game is not its job yet; Direct connect is. Returns true when the
+// user chose to launch, with the settings in out - the launch itself
+// belongs to the caller, which is where MamePlayGameWithOptions lives.
+// nSelected is the driver index selected in the main window, or -1. It is
+// passed in rather than read here: Picker_GetSelectedItem needs the
+// listview HWND, which only winui.cpp has.
+bool NetplayLobbyDialog(HWND hParent, int nSelected, netplay_launch *out);
 
 #endif // MAME_OSD_WINUI_NETPLAYUI_H

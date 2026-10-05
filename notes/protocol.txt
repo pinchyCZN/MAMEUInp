@@ -70,6 +70,8 @@ Table of Contents
    4. Handshake
       4.1. Sequence
       4.2. What JOIN carries
+         4.2.1. The inputmap digest covers DIP and config values
+         4.2.2. JOIN names the slot it wants
       4.3. -drc belongs here, not in the safe list
       4.4. REFUSE carries a reason, and the reason is specific
    5. Open questions
@@ -1663,6 +1665,27 @@ Table of Contents
    is why it is caught there rather than left to desync detection. A
    setting changed mid-session through the Tab menu is not caught
    either; that stays on the honour system. [open]
+
+4.2.2.  JOIN names the slot it wants
+
+   JOIN carries a 1-based slot. The server seats the peer there or
+   refuses with REFUSE_SLOT, "that player slot is already taken".
+   Zero means no preference and takes the lowest free slot; an
+   out-of-range value is treated as zero rather than refused, so a
+   peer asking for player 3 of a 2-player session still gets a game.
+
+   THE CLIENT KEEPS ITS CONFIGURED SLOT WHATEVER WELCOME SAYS - a
+   disagreement is only a warning in its log. So a server that
+   assigned slots itself would seat two peers both configured as
+   player 1 in slots 1 and 2, and both would then send as player 1:
+   nobody sees player 2, and no error is reported at either end.
+   Honouring the request turns that into a refusal at join time.
+
+   Measured against the relay with hand-built JOIN datagrams: slot 1
+   gives WELCOME slot 1, a second peer asking for slot 1 gives
+   REFUSE_SLOT, slot 2 gives WELCOME slot 2, and a fourth peer is
+   REFUSE_RUNNING because the session is then full. [verified]
+
 
 4.3.  -drc belongs here, not in the safe list
 

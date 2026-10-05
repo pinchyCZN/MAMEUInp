@@ -169,7 +169,7 @@ size_t build_join(u8 *buf, size_t cap, const join_payload &p)
 	put_u64(q + 0, p.inputmap);
 	put_u64(q + 8, p.layout);
 	put_u8(q + 16, p.want_players);
-	put_u8(q + 17, 0);
+	put_u8(q + 17, p.slot);
 	for (unsigned i = 0; i < sizeof(p.driver); i++)
 		q[18 + i] = u8(p.driver[i]);
 	return len;
@@ -188,6 +188,7 @@ bool parse_join(const u8 *buf, size_t len, join_payload &p)
 	p.inputmap = get_u64(q + 0);
 	p.layout = get_u64(q + 8);
 	p.want_players = get_u8(q + 16);
+	p.slot = get_u8(q + 17);
 	for (unsigned i = 0; i < sizeof(p.driver); i++)
 		p.driver[i] = char(q[18 + i]);
 	return true;
@@ -276,6 +277,7 @@ const char *refuse_text(u8 reason)
 	case REFUSE_FULL:     return "no free player slot";
 	case REFUSE_RUNNING:  return "session already started";
 	case REFUSE_TOOWIDE:  return "driver needs more than 64 bits per player";
+	case REFUSE_SLOT:     return "that player slot is already taken";
 	default:              return "unknown reason";
 	}
 }
