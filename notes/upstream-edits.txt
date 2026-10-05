@@ -259,6 +259,27 @@ Table of Contents
    | src/osd/windows/window.cpp   | window title carries           |
    |                              | NETPLAY_TAG                    |
    +------------------------------+--------------------------------+
+   | src/osd/winui/resource.h     | ID_FILE_NETPLAY, 40200. Clear  |
+   |                              | of the upstream run so a       |
+   |                              | rebase need not place it       |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/mameui.rc      | File menu: Netplay replaces    |
+   |                              | Open Other Software, grayed    |
+   |                              | until the dialog exists, plus  |
+   |                              | its status-bar hint.           |
+   |                              | ID_MESS_OPEN_SOFTWARE is left  |
+   |                              | orphaned, handler intact       |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/winui.cpp      | three unrelated frontend       |
+   |                              | fixes: the two icon-view       |
+   |                              | toolbar buttons removed (they  |
+   |                              | hang on a full set), the       |
+   |                              | tooltip and CommandToString    |
+   |                              | arrays kept index-parallel     |
+   |                              | with them, and the search box  |
+   |                              | anchored RA_LEFT so it stops   |
+   |                              | following the window edge      |
+   +------------------------------+--------------------------------+
    | src/emu/emuopts.cpp / .h     | -netplay_hashlog and           |
    |                              | -netplay_hashinterval. Also    |
    |                              | restores cannonical_instance_  |

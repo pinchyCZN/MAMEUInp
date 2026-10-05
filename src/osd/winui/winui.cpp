@@ -693,8 +693,6 @@ static const TBBUTTON tbb[] =
 	{1, ID_VIEW_SOFTWARE_AREA, TBSTATE_ENABLED, TBSTYLE_CHECK,      {0, 0}, 0, 1},
 	{1, ID_VIEW_PICTURE_AREA,  TBSTATE_ENABLED, TBSTYLE_CHECK,      {0, 0}, 0, 1},
 	{0, 0,                     TBSTATE_ENABLED, TBSTYLE_SEP,        {0, 0}, 0, 0},
-	{2, ID_VIEW_LARGE_ICON,    TBSTATE_ENABLED, TBSTYLE_CHECKGROUP, {0, 0}, 0, 2},
-	{3, ID_VIEW_SMALL_ICON,    TBSTATE_ENABLED, TBSTYLE_CHECKGROUP, {0, 0}, 0, 3},
 	{4, ID_VIEW_LIST_MENU,     TBSTATE_ENABLED, TBSTYLE_CHECKGROUP, {0, 0}, 0, 4},
 	{5, ID_VIEW_DETAIL,        TBSTATE_ENABLED, TBSTYLE_CHECKGROUP, {0, 0}, 0, 5},
 	{6, ID_VIEW_GROUPED,       TBSTATE_ENABLED, TBSTYLE_CHECKGROUP, {0, 0}, 0, 6},
@@ -705,15 +703,13 @@ static const TBBUTTON tbb[] =
 
 #define NUM_TOOLBUTTONS (sizeof(tbb) / sizeof(tbb[0]))
 
-#define NUM_TOOLTIPS 9
+#define NUM_TOOLTIPS 7
 
 static const TCHAR szTbStrings[NUM_TOOLTIPS + 1][30] =
 {
 	TEXT("Toggle Folder List"),
 	TEXT("Toggle Software List"),
 	TEXT("Toggle Screen Shot"),
-	TEXT("Large Icons"),
-	TEXT("Small Icons"),
 	TEXT("List"),
 	TEXT("Details"),
 	TEXT("Grouped"),
@@ -726,8 +722,8 @@ static const int CommandToString[] =
 	ID_VIEW_FOLDERS,
 	ID_VIEW_SOFTWARE_AREA,
 	ID_VIEW_PICTURE_AREA,
-	ID_VIEW_LARGE_ICON,
-	ID_VIEW_SMALL_ICON,
+	// NETPLAY: index-parallel with szTbStrings, so the two icon-view
+	// entries come out of both or every tooltip after them is wrong.
 	ID_VIEW_LIST_MENU,
 	ID_VIEW_DETAIL,
 	ID_VIEW_GROUPED,
@@ -747,7 +743,7 @@ static const int s_nPickers[] =
 /* How to resize toolbar sub window */
 static ResizeItem toolbar_resize_items[] =
 {
-	{ RA_ID,   { ID_TOOLBAR_EDIT }, true,  RA_RIGHT | RA_TOP, NULL },
+	{ RA_ID,   { ID_TOOLBAR_EDIT }, true,  RA_LEFT | RA_TOP, NULL },
 	{ RA_END,  { 0 },               false, 0,                 NULL }
 };
 

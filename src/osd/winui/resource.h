@@ -487,6 +487,10 @@
 #define ID_TOGGLE_TAB_TITLE             40165
 #define ID_TOGGLE_TAB_VERSUS            40166
 #define ID_TOGGLE_TAB_HISTORY           40167
+// NETPLAY: the menu item that replaced Open Other Software. 40200
+// rather than 40168 to leave the upstream run of IDs alone, so a
+// rebase does not have to care where this landed.
+#define ID_FILE_NETPLAY                 40200
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

@@ -59,7 +59,7 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "Loa&d Savestate...",          ID_FILE_LOADSTATE, GRAYED
         MENUITEM SEPARATOR
-        MENUITEM "Op&en Other Software...",     ID_MESS_OPEN_SOFTWARE
+        MENUITEM "&Netplay...",                 ID_FILE_NETPLAY, GRAYED
         MENUITEM SEPARATOR
         MENUITEM "Pr&operties",                 ID_GAME_PROPERTIES
         MENUITEM SEPARATOR
@@ -1479,6 +1479,7 @@ BEGIN
     ID_FILE_EXIT            "Exit the application"
     ID_FILE_PLAY            "Play currently selected system"
     ID_HELP_ABOUT           "Displays program and copyright information"
+    ID_FILE_NETPLAY         "Host or join a netplay session."
     ID_VIEW_LARGE_ICON      "Display items by using large icons."
     ID_VIEW_SMALL_ICON      "Display items by using small icons."
     ID_VIEW_LIST_MENU       "Displays items in a list."
