@@ -292,6 +292,14 @@ private:
 	unsigned                    m_delay;
 	unsigned                    m_batch;        // tier K, frames per packet
 	unsigned                    m_depth;        // datagrams per word
+
+	// Does this session use savestates at all? One switch over resync
+	// serving, asking, the periodic snapshot and the state push, because
+	// they all rest on the same thing: that this driver can reload its
+	// own state. determinism.txt 6.2 shows that is per driver and that
+	// MACHINE_SUPPORTS_SAVE does not predict it, so it has to be a
+	// decision somebody makes rather than something inferred.
+	bool                        m_savestates;
 	u8                          m_need;         // slots that must arrive
 
 	input_word                  m_pending;      // local word for m_frame + m_delay
@@ -424,11 +432,6 @@ private:
 	// it is open. See the header comment on the other NETPLAY_TEST vars.
 	frame_t                     m_test_chat_at;
 
-	// DIAGNOSTIC: refuse every resync request, so the NAK path can be
-	// exercised without a driver whose state is genuinely too large.
-	// Redundant once NETPLAY_SAVESTATES lands - that will refuse for
-	// real, with the same reason code.
-	bool                        m_test_nak;
 	frame_t                     m_test_resync_every;
 	frame_t                     m_test_chat_hold;
 	char                        m_chat_prompt[CHAT_MAX_TEXT + 8];

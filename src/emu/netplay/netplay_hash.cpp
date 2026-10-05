@@ -418,6 +418,14 @@ void netplay_state_hash::on_frame()
 		std::fprintf(m_log, "%llu,%016llx\n",
 				static_cast<unsigned long long>(frame),
 				static_cast<unsigned long long>(state_hash()));
+
+		// FLUSHED EVERY LINE, and it is not about losing the tail. A run
+		// that is killed - a test timeout, a crash, the window closed -
+		// leaves the last line half written, and a reader comparing two
+		// logs sees a short hash where a full one should be and calls it a
+		// desync. Cost one buffered write per frame; the alternative is a
+		// tool that invents divergence at whatever frame it was stopped.
+		std::fflush(m_log);
 	}
 }
 

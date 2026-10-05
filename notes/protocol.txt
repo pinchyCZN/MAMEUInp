@@ -47,7 +47,8 @@ Table of Contents
          2.6.2. An unsolicited state is its own notification
          2.6.3. The push must wait for the load to land
          2.6.4. Measured end to end
-      2.7. This is most of rollback
+      2.7. One switch decides whether a session uses savestates
+      2.8. This is most of rollback
    3. Packet layout
       3.1. Byte order is little-endian
       3.2. Common header, 12 bytes
@@ -1036,7 +1037,46 @@ Table of Contents
      the host on every frame from the apply onward
    o one frame differed before the push landed, as 2.6.2 describes
 
-2.7.  This is most of rollback
+2.7.  One switch decides whether a session uses savestates
+
+   Resync serving, asking for a resync, the periodic snapshot and the
+   state push all rest on one thing: that this driver can reload its
+   own state. determinism.txt 6.2 shows that is a per-driver fact and
+   that MACHINE_SUPPORTS_SAVE does not predict it, so it has to be a
+   decision somebody makes rather than something inferred.
+
+   +---------------------------+-------------------------------------+
+   | With it off               | Effect                              |
+   +===========================+=====================================+
+   | a guest presses the key   | answered locally, no datagram sent  |
+   +---------------------------+-------------------------------------+
+   | a request reaches a host  | NAK, reason "savestates are off"    |
+   +---------------------------+-------------------------------------+
+   | the snapshot period       | ignored, nothing is written         |
+   +---------------------------+-------------------------------------+
+   | the state push            | suppressed                          |
+   +---------------------------+-------------------------------------+
+
+   A guest answers its own key press rather than asking and being
+   refused: it already knows, and a round trip would say nothing more.
+   A host still NAKs, because the guest's setting is its own and may
+   differ.
+
+   Off is the Kaillera fallback: peers cold-boot, nothing is
+   transferred, and lockstep alone carries the session - which is all
+   Kaillera ever had.
+
+   -state WITH IT OFF IS A CONTRADICTION. The host's machine is then
+   not a cold boot and it will hand that state to nobody, so every
+   guest desyncs from frame 0 with no way back. It is reported on
+   screen and in the log rather than quietly obeyed.
+
+   Measured on dino: with it off a guest asking every 60 frames sent
+   no datagrams at all; with the host off and a guest on, 11 requests
+   drew 11 refusals and no timeouts; a 10 second snapshot period wrote
+   one snapshot with it on and none with it off. [verified]
+
+2.8.  This is most of rollback
 
    In-band frame-tagged state plus "load it and replay the inputs from
    there" IS rollback, triggered rarely over a long window instead of

@@ -77,6 +77,7 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_delay(delay)
 	, m_batch(batch)
 	, m_depth(1)
+	, m_savestates(true)
 	, m_need(0)
 	, m_pending(0)
 	, m_echo(0)
@@ -131,7 +132,6 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_chat_open(false)
 	, m_chat_len(0)
 	, m_test_chat_at(0)
-	, m_test_nak(false)
 	, m_test_resync_every(0)
 	, m_test_chat_hold(0)
 	, m_replaying(false)
@@ -217,6 +217,14 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	m_chat_prompt[0] = 0;
 	m_test_chat_at = frame_t(env_uint("NETPLAY_TEST_CHAT_AT", 0));
 
+	// THE MASTER SWITCH. Default on, because most drivers do reload
+	// their state; off is the deliberate choice for one that does not.
+	const char *ss = std::getenv("NETPLAY_SAVESTATES");
+	m_savestates = unset(ss)
+			|| !((std::strcmp(ss, "0") == 0)
+				|| (std::strcmp(ss, "off") == 0)
+				|| (std::strcmp(ss, "no") == 0));
+
 	// SNAPSHOT PERIOD, IN SECONDS, HELD IN FRAMES. Seconds is what a
 	// player means; frames is what the interval has to be measured in,
 	// because what matters is how much PLAY is lost and a host that
@@ -228,6 +236,9 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	unsigned snap_secs = env_uint("NETPLAY_SNAPSHOT_SECS", 0);
 	if ((snap_secs != 0) && (snap_secs < 10))
 		snap_secs = 10;
+	if (!m_savestates)
+		snap_secs = 0;          // a state nothing can reload is not worth
+	                        // writing, and writing one implies it is
 	m_snap_period = frame_t(snap_secs * 60);
 	m_snap_due = m_snap_period;
 
@@ -258,13 +269,25 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 			&& ((std::strcmp(push, "never") == 0)
 				|| (std::strcmp(push, "0") == 0)
 				|| (std::strcmp(push, "off") == 0));
-	m_push_wanted = from_state && !push_off;
+	m_push_wanted = from_state && !push_off && m_savestates;
+
+	// A CONTRADICTION WORTH SHOUTING ABOUT. -state means the host's
+	// machine is not a cold boot, and savestates off means it will not
+	// hand that state to anyone - so every guest cold-boots and is
+	// desynced from frame 0 with no way back. The lobby will not offer
+	// the combination; a command line can still ask for it.
+	if (from_state && !m_savestates)
+	{
+		osd_printf_info("netplay: -state was given but savestates are off: "
+				"guests will NOT receive it and will desync\n");
+		m_machine.popmessage(
+				"Started from a state with savestates disabled - guests will desync");
+	}
 
 	if (m_push_wanted && (m_local == 1))
 		osd_printf_info("netplay: will push state to guests%s\n",
 				from_state ? " (started from -state)" : "");
 	m_test_chat_hold = frame_t(env_uint("NETPLAY_TEST_CHAT_HOLD", 0));
-	m_test_nak = env_flag("NETPLAY_TEST_NAK");
 	m_test_resync_every =
 			frame_t(env_uint("NETPLAY_TEST_RESYNC_EVERY", 0));
 
@@ -344,6 +367,8 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 		}
 	}
 
+	osd_printf_info("netplay: savestates %s\n",
+			m_savestates ? "enabled" : "DISABLED for this session");
 	osd_printf_info("netplay: state is %d KB, resync limit %d KB, %s\n",
 			int(state_blob::machine_state_size(m_machine) / 1024),
 			int(RESYNC_MAX_BYTES / 1024),
@@ -995,6 +1020,15 @@ bool manager::request_resync(running_machine &machine)
 		machine.popmessage("The host has nobody to resync from");
 		return true;
 	}
+
+	// Answered locally rather than by asking and being refused: this
+	// peer already knows the session does not use savestates, and a
+	// round trip would say nothing it does not.
+	if (!m->m_savestates)
+	{
+		machine.popmessage("Savestates are disabled for this session");
+		return true;
+	}
 	if (m->m_resync_wanted)
 		return true;            // already asking
 
@@ -1115,7 +1149,7 @@ void manager::serve_resync(const resync_req_payload &req)
 		// lost packet, so the asker nags for ten seconds and then reports a
 		// timeout - which sends whoever is playing after a network fault
 		// that is not there.
-		if (m_test_nak)
+		if (!m_savestates)
 		{
 			send_nak(NAK_ABOUT_RESYNC, NAK_DISABLED);
 			return;
@@ -2345,6 +2379,7 @@ void manager::write_status()
 	std::fprintf(f, "delay=%d\n", int(m_delay));
 	std::fprintf(f, "batch=%d\n", int(m_batch));
 	std::fprintf(f, "depth=%d\n", int(m_depth));
+	std::fprintf(f, "savestates=%d\n", m_savestates ? 1 : 0);
 	std::fprintf(f, "naks_sent=%llu\n",
 			static_cast<unsigned long long>(m_naks_sent));
 	std::fprintf(f, "naks_answered=%llu\n",
