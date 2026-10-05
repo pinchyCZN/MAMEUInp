@@ -135,6 +135,26 @@ Table of Contents
    [verified: ioport.cpp, ioport_manager::record_port and
    ioport_manager::playback_port]
 
+   NONE OF defvalue TRAVELS, AND NOTHING OVERWRITES IT. inject_port
+   writes live().digital only, and ioport_port::read XORs defvalue in
+   afterwards, so DIP switches, config settings and toggle state are
+   purely local. Two peers set differently read different values every
+   frame and diverge at once, permanently, with nothing in any log to
+   explain it.
+
+   They are pinned by the handshake: the inputmap digest mixes in a
+   config digest over every field's live value, so a mismatch is
+   REFUSE_INPUTCFG at join. notes/protocol.txt 4.2
+
+   HASHED PER FIELD, NOT PER PORT. ioport_port::update_defvalue builds
+   the port's defvalue out of those field values, but its only callers
+   are in ioport_manager::frame_update AFTER the netplay hook, and
+   nothing calls it when the config file is read - so at handshake time
+   the port defvalue has never absorbed the loaded settings. Hashing it
+   gives two differently configured peers the same digest: a check that
+   looks present and detects nothing. ioport_manager::load_config writes
+   field.live().value, so that is the field to read. [verified]
+
    Two consequences.
 
    First, PLAYER IDENTITY IS ALREADY GONE at this layer. digital is one

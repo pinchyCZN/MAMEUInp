@@ -84,6 +84,7 @@ private:
 	bool want_entries(u64 frame) const;
 
 	u64 compute_layout_hash() const;
+	void find_presave_mirrors();
 
 	running_machine &   m_machine;
 	u64                 m_layout_hash;
@@ -92,6 +93,17 @@ private:
 	FILE *              m_log;
 	FILE *              m_entry_log;
 	std::vector<std::pair<u64, u64> > m_entry_frames;
+
+	// Hashed NAMES of the entries dispatch_presave writes - mirrors
+	// carried into a savestate and never read back during execution,
+	// excluded from the hash. See find_presave_mirrors.
+	//
+	// BY NAME AND NOT BY INDEX. indexed_item's ordering is not stable
+	// across a machine's life: save_manager::allow_registration(false)
+	// sorts the list by name when registration closes, so an index taken
+	// before that names a different entry afterwards. Measured: index 53
+	// was maincpu m_save_sr early and m_mmu_urp_aptr later.
+	std::vector<u64>    m_mirror_names;
 };
 
 #endif // MAME_EMU_NETPLAY_NETPLAY_HASH_H

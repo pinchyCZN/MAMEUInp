@@ -70,6 +70,12 @@ public:
 	// Only a transport with a handshake has anything to say here.
 	virtual bool ready() const { return true; }
 
+	// The server turned this peer away. Virtual on the base because the
+	// manager only ever holds a transport pointer, and a refusal it
+	// cannot see is a peer that waits in the join gate forever.
+	virtual bool refused() const { return false; }
+	virtual const char *refuse_reason() const { return ""; }
+
 	virtual const char *name() const = 0;
 
 	// diagnostics; the sizing work in protocol.txt 1.6.3 is these numbers
@@ -156,7 +162,9 @@ public:
 
 	bool welcomed() const { return m_welcomed; }
 	bool ready() const override { return m_started; }
-	bool refused() const { return m_refused; }
+	bool refused() const override { return m_refused; }
+	const char *refuse_reason() const override
+		{ return refuse_text(m_refuse_code); }
 	player_t slot() const { return m_slot; }
 	player_t players() const { return m_players; }
 
@@ -188,6 +196,7 @@ private:
 	bool        m_welcomed;
 	bool        m_started;
 	bool        m_refused;
+	u8          m_refuse_code;
 	u64         m_ticks;
 	u8          m_join[MAX_DATAGRAM];
 	size_t      m_join_len;

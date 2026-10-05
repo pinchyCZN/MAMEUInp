@@ -12,6 +12,8 @@
 #include "netplay/netplay_manager.h"
 #include <ctime>
 #include "uiinput.h"   // NETPLAY: ui_input_manager is incomplete via emu.h
+#include "emuopts.h"  // NETPLAY: emu_options, for -state detection
+#include "screen.h"   // NETPLAY: screen_device_iterator for thumbnails
 #include "main.h"      // NETPLAY: emulator_info::draw_user_interface
 #include "osdepend.h"  // NETPLAY: osd_interface::update
 #include "netplay/netplay_hash.h"
@@ -111,11 +113,20 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_req_pending(false)
 	, m_req()
 	, m_resync_ready(false)
+	, m_resync_done_id(0)
+	, m_snap_period(0)
+	, m_snap_keep(10)
+	, m_snap_next(0)
+	, m_snap_due(0)
+	, m_push_wanted(false)
+	, m_push_done(false)
+	, m_snap_pending(false)
 	, m_capture_pending(false)
 	, m_unsafe(0)
 	, m_published(0)
 	, m_own_hole(false)
 	, m_stall_warned(false)
+	, m_refused_reported(false)
 	, m_chat_n(0)
 	, m_chat_open(false)
 	, m_chat_len(0)
@@ -203,6 +214,53 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	m_chat_edit[0] = 0;
 	m_chat_prompt[0] = 0;
 	m_test_chat_at = frame_t(env_uint("NETPLAY_TEST_CHAT_AT", 0));
+
+	// SNAPSHOT PERIOD, IN SECONDS, HELD IN FRAMES. Seconds is what a
+	// player means; frames is what the interval has to be measured in,
+	// because what matters is how much PLAY is lost and a host that
+	// stalls or fast-forwards drifts from the wall clock.
+	//
+	// 0 is off, and anything below 10 s is raised to it: snapshotting a
+	// multi-megabyte state every couple of seconds costs more than the
+	// play it would save.
+	unsigned snap_secs = env_uint("NETPLAY_SNAPSHOT_SECS", 0);
+	if ((snap_secs != 0) && (snap_secs < 10))
+		snap_secs = 10;
+	m_snap_period = frame_t(snap_secs * 60);
+	m_snap_due = m_snap_period;
+
+	m_snap_keep = env_uint("NETPLAY_SNAPSHOT_KEEP", 10);
+	if (m_snap_keep < 1)
+		m_snap_keep = 1;
+	if (m_snap_keep > 99)
+		m_snap_keep = 99;        // the name is two digits
+
+	// PUSHING STATE TO A GUEST, and the default needs no configuration
+	// at all: -state is itself the signal. A host told to load a snapshot
+	// is a host whose machine does not match a cold boot, so its guests
+	// have to be given that state rather than told to ask for it.
+	//
+	// Two values, not three. An "always" that pushed on a cold boot too
+	// was meant to make a configuration difference harmless, and it
+	// cannot: DIP, config and analog settings live outside the save set
+	// entirely, so no state transfer repairs them. They are caught by the
+	// handshake instead - protocol.txt 4.2.1 - which left that mode
+	// paying for nothing.
+	//
+	// never is the Kaillera fallback, for a driver whose savestates do
+	// not round-trip (determinism.txt 6.2): peers cold-boot, nobody
+	// transfers anything, and lockstep alone carries the session.
+	const char *push = std::getenv("NETPLAY_PUSH_STATE");
+	const bool from_state = !unset(m_machine.options().state());
+	const bool push_off = !unset(push)
+			&& ((std::strcmp(push, "never") == 0)
+				|| (std::strcmp(push, "0") == 0)
+				|| (std::strcmp(push, "off") == 0));
+	m_push_wanted = from_state && !push_off;
+
+	if (m_push_wanted && (m_local == 1))
+		osd_printf_info("netplay: will push state to guests%s\n",
+				from_state ? " (started from -state)" : "");
 	m_test_chat_hold = frame_t(env_uint("NETPLAY_TEST_CHAT_HOLD", 0));
 
 	machine.add_notifier(MACHINE_NOTIFY_EXIT,
@@ -243,6 +301,26 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 		if (m_log != nullptr)
 		{
 			std::fprintf(m_log, "# machine=%s\n", m_machine.system().name);
+			std::fprintf(m_log, "# config_digest=%016llx\n",
+					static_cast<unsigned long long>(m_map.config_digest()));
+
+			// Every DIP and config field with the value it is set to. A
+			// REFUSE_INPUTCFG says the two peers disagree but not about
+			// what; diffing two of these says which switch it was.
+			for (auto &entry : m_machine.ioport().ports())
+				for (const ioport_field &field : entry.second->fields())
+				{
+					if ((field.type() != IPT_DIPSWITCH)
+							&& (field.type() != IPT_CONFIG))
+						continue;
+					std::fprintf(m_log,
+							"# config %s:%s mask=%08x value=%08x default=%08x\n",
+							entry.first.c_str(),
+							(field.name() != nullptr) ? field.name() : "?",
+							u32(field.mask()),
+							u32(field.live().value & field.mask()),
+							u32(field.defvalue() & field.mask()));
+				}
 			std::fprintf(m_log, "# inputmap_digest=%016llx\n",
 					static_cast<unsigned long long>(m_map.digest()));
 			std::fprintf(m_log, "# players=%d local=%d delay=%d batch=%d depth=%d\n",
@@ -267,11 +345,12 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 			(state_blob::machine_state_size(m_machine) <= RESYNC_MAX_BYTES)
 					? "resync possible" : "RESYNC WILL BE REFUSED");
 
-	osd_printf_info("netplay: %s players=%d local=%d delay=%d batch=%d budget=%d bits=%d digest=%016llx\n",
+	osd_printf_info("netplay: %s players=%d local=%d delay=%d batch=%d budget=%d bits=%d digest=%016llx config=%016llx\n",
 			m_link->name(), int(m_players), int(m_local), int(m_delay),
 			int(m_batch), int(m_delay) - int(m_batch) + 1,
 			int(m_map.digital_used()),
-			static_cast<unsigned long long>(m_map.digest()));
+			static_cast<unsigned long long>(m_map.digest()),
+			static_cast<unsigned long long>(m_map.config_digest()));
 	return true;
 }
 
@@ -465,6 +544,30 @@ void manager::batch_add(input_word word, frame_t frame)
 
 	if (m_out_n >= m_batch)
 		batch_flush();
+}
+
+
+void manager::publish_up_to(frame_t through, input_word word)
+{
+	if (m_published >= through)
+		return;
+
+	const frame_t first = m_published + 1;
+
+	// The local word is known the moment it is captured and never travels
+	// to reach us, so it goes straight into the ring. Only other peers'
+	// words come off the link.
+	for (frame_t f = first; f <= through; f++)
+	{
+		publish(f, m_local, word);
+		batch_add(word, f);
+	}
+
+	if (first != through)
+		osd_printf_info("netplay: filled stream gap %u..%u at frame %u\n",
+				unsigned(first), unsigned(through), unsigned(m_frame));
+
+	m_published = through;
 }
 
 
@@ -939,7 +1042,7 @@ void manager::safe_point(running_machine &machine)
 	manager *const m = active();
 	if ((m == nullptr) || (s_owner != &machine))
 		return;
-	if (!m->m_capture_pending && !m->m_resync_ready)
+	if (!m->m_capture_pending && !m->m_resync_ready && !m->m_snap_pending)
 		return;
 
 	// Upstream's own gate, for upstream's own reason: an anonymous timer
@@ -966,6 +1069,12 @@ void manager::safe_point(running_machine &machine)
 	{
 		m->m_capture_pending = false;
 		m->do_capture();
+	}
+
+	if (m->m_snap_pending)
+	{
+		m->m_snap_pending = false;
+		m->take_snapshot();
 	}
 
 	if (m->m_resync_ready)
@@ -1079,8 +1188,30 @@ void manager::pump_resync_send()
 void manager::take_resync_chunk(frame_t state_frame, const resync_payload &p,
 		const u8 *chunk, size_t chunk_len)
 {
-	if (!m_resync_wanted)
+	// A straggler from a transfer already applied. Without this it would
+	// arm the push path below and start the whole thing again.
+	if ((p.id != 0) && (p.id == m_resync_done_id))
 		return;
+
+	// UNSOLICITED CHUNKS ARE ACCEPTED, and that is the entire mechanism
+	// for "the host started from a snapshot, take its state". No new
+	// message type, no flag in the handshake, no server involvement: the
+	// arrival of the state IS the notification.
+	//
+	// Arming m_resync_wanted is what makes that safe rather than
+	// half-working. Every piece of the completion machinery keys off that
+	// flag - the missing-chunk bitmap, the nag that chases them, the
+	// give-up - so a push with one chunk lost would otherwise leave a
+	// partial blob that nothing could ever finish and no one would
+	// report, with the guest playing on desynced.
+	if (!m_resync_wanted)
+	{
+		m_resync_wanted = true;
+		m_resync_nag = 0;
+		m_resync_id = 0;           // forces begin_receive below
+		osd_printf_info("netplay: host is sending state unasked, taking it\n");
+		m_machine.popmessage("Receiving state from the host...");
+	}
 
 	if (m_resync_id != p.id)
 	{
@@ -1101,13 +1232,28 @@ void manager::apply_resync()
 	const frame_t target = m_frame;
 	const frame_t from = m_blob.frame();
 
-	// The state is older than the ring can still account for, so the words
-	// needed to replay forward are gone. Asking again is the only option.
-	if ((target < from) || ((target - from) >= (RING - 8)))
+	// A STATE FROM THE HOST'S FUTURE IS NOT A FAILURE. The host leads by
+	// up to m_delay frames - it is the faster peer and waits on this one -
+	// so by the time its snapshot lands here it can be stamped AHEAD of
+	// this peer's own frame. Measured on a real link: from was target + 3
+	// every single time, which rejected every request made in the first
+	// seconds of a session and none later, because a cold guest cannot
+	// hold 60 Hz and the host sits at its maximum lead until it can.
+	//
+	// Refusing it was wrong. The blob is a complete machine state that
+	// already contains this peer's own inputs for the frames in between,
+	// because the host ran them, so the correct move is to jump forward
+	// onto it. notes/protocol.txt 2.5
+	const bool jump_forward = (target < from);
+
+	// Genuinely stale is the other direction: the words needed to replay
+	// from `from` up to here have long since left the ring.
+	if (!jump_forward && ((target - from) >= (RING - 8)))
 	{
-		osd_printf_info("netplay: resync state for frame %u is unusable at frame %u\n",
-				unsigned(from), unsigned(target));
-		m_machine.popmessage("Resync failed: state arrived too late");
+		osd_printf_info("netplay: resync state for frame %u is %u frames "
+				"behind frame %u, too stale to replay\n",
+				unsigned(from), unsigned(target - from), unsigned(target));
+		m_machine.popmessage("Resync failed: the state was too old to use");
 		m_resync_wanted = false;
 		m_blob.clear();
 		return;
@@ -1121,24 +1267,59 @@ void manager::apply_resync()
 		return;
 	}
 
-	// Rewind the frame counter to the state's frame and replay forward
-	// through input that is already in the ring. The pending local word is
-	// dropped: it belongs to a frame that is about to be re-run from
-	// already-published input.
-	//
 	// m_frame = from, where from is the frame the HOST had yet to inject
 	// when it snapshotted. The blob carries the machine mid-frame, exactly
 	// where the host was, so the next injection here is the same frame the
 	// host injected next. Both sides agree on that only because capture
 	// and restore both happen at a scheduler-safe point.
+	m_resync_done_id = m_blob.id();
+
+	const frame_t was = m_frame;
 	m_frame = from;
 	m_pending = 0;
 	m_echo = 0;
-	m_replaying = true;
-	m_replay_until = target;
-	m_catchup = true;
 	m_resync_wanted = false;
 	m_blob.clear();
+
+	if (jump_forward)
+	{
+		// Nothing to replay - the frames between are not re-run, they are
+		// skipped, and the state already accounts for them.
+		m_replaying = false;
+		m_catchup = false;
+		m_machine.video().set_fastforward(false);
+
+		// TOP UP THE STREAM BEFORE RUNNING. frame_begin will want this
+		// peer's own word for m_frame, and only publishing puts it in the
+		// ring - so if the jump landed past m_published, the next
+		// frame_begin blocks on its own input and never recovers. That is
+		// the delay-1 deadlock class, reached a different way.
+		//
+		// The shortfall is at most one frame and the arithmetic says why:
+		// the host has RUN every frame below `from`, which it could only do
+		// with this peer's words for them, so m_published is at least
+		// from - 1. Filling repeats the last word published.
+		if (m_published < m_frame)
+		{
+			const slot &last = at(m_published);
+			const input_word w = (last.stamp == m_published)
+					? last.words[m_local - 1] : input_word(0);
+			publish_up_to(m_frame, w);
+			batch_flush();      // not inside frame_end, so send it now
+		}
+
+		osd_printf_info("netplay: resync applied, jumped %u -> %u" 
+				" (host was %u ahead)\n",
+				unsigned(was), unsigned(from), unsigned(from - was));
+		m_machine.popmessage("Resynced - skipped forward %d frames",
+				int(from - was));
+		return;
+	}
+
+	// Behind the state: replay forward through input already in the ring.
+	m_replaying = true;
+	m_replay_until = was;
+	m_catchup = true;
 
 	// Unthrottled, or the gap never closes: running at 60 Hz while the host
 	// also runs at 60 Hz leaves the guest permanently behind, and the host
@@ -1146,10 +1327,75 @@ void manager::apply_resync()
 	m_machine.video().set_fastforward(true);
 
 	osd_printf_info("netplay: resync applied, replaying %u..%u\n",
-			unsigned(from), unsigned(target));
+			unsigned(from), unsigned(was));
 	m_machine.popmessage("Resynced - catching up %d frames",
-			int(target - from));
+			int(was - from));
 }
+
+//-------------------------------------------------
+//  take_snapshot - a rolling savestate the host can
+//  resume a session from
+//-------------------------------------------------
+
+void manager::take_snapshot()
+{
+	// WRITTEN AS MAME WRITES ONE, WHERE MAME WRITES ONE. Same format,
+	// same path convention, so -state <name> loads it with no new code
+	// and the file is useful outside netplay. running_machine::
+	// schedule_save would do the same thing, but handle_saveload pops
+	// "State successfully saved" every time, which is noise every time
+	// the period elapses.
+	//
+	// A FAILED SNAPSHOT IS NOT A FAILED SESSION. Nothing here touches
+	// emulated state, so every error path just says so and returns.
+	char name[32];
+	std::snprintf(name, sizeof(name), "np%02u", m_snap_next + 1);
+	m_snap_next = (m_snap_next + 1) % m_snap_keep;
+
+	const char *searchpath = nullptr;
+	const std::string fname =
+			m_machine.compose_saveload_filename(std::string(name), &searchpath);
+
+	emu_file file((searchpath != nullptr) ? searchpath : "",
+			OPEN_FLAG_WRITE | OPEN_FLAG_CREATE | OPEN_FLAG_CREATE_PATHS);
+	if (file.open(fname) != osd_file::error::NONE)
+	{
+		osd_printf_info("netplay: cannot write snapshot %s\n", fname.c_str());
+		return;
+	}
+
+	const save_error err = m_machine.save().write_file(file);
+	file.close();
+
+	if (err != STATERR_NONE)
+	{
+		osd_printf_info("netplay: snapshot %s failed, error %d\n",
+				name, int(err));
+		return;
+	}
+
+	// A thumbnail beside it, so a lobby can show what it is rather than a
+	// filename. save_snapshot renders through its own render target into
+	// its own bitmap - presentation only, nothing in the save set, so it
+	// cannot perturb the session. video.cpp create_snapshot_bitmap
+	std::string png = fname;
+	if (png.size() > 4)
+		png.replace(png.size() - 4, 4, ".png");
+
+	emu_file shot((searchpath != nullptr) ? searchpath : "",
+			OPEN_FLAG_WRITE | OPEN_FLAG_CREATE | OPEN_FLAG_CREATE_PATHS);
+	if (shot.open(png) == osd_file::error::NONE)
+	{
+		screen_device *const screen =
+				screen_device_iterator(m_machine.root_device()).first();
+		m_machine.video().save_snapshot(screen, shot);
+		shot.close();
+	}
+
+	osd_printf_info("netplay: snapshot %s at frame %u\n",
+			name, unsigned(m_frame));
+}
+
 
 //-------------------------------------------------
 //  chat
@@ -1418,6 +1664,19 @@ void manager::wait_for_input()
 	// published while a peer has not joined is relayed to nobody and is
 	// gone for good, which costs exactly m_delay frames of input and
 	// desyncs both peers permanently. notes/protocol.txt 4.1
+	// REFUSED MEANS THERE IS NO SESSION TO WAIT FOR. Nothing read this
+	// before, so a peer the server turned away sat in the join gate for
+	// good - and if the gate ever gave up it would run on alone and
+	// desynced, which is worse than stopping.
+	if (m_link && m_link->refused() && !m_refused_reported)
+	{
+		m_refused_reported = true;
+		osd_printf_info("netplay: cannot join - %s\n",
+				m_link->refuse_reason());
+		m_machine.popmessage("Cannot join: %s", m_link->refuse_reason());
+		m_machine.schedule_exit();
+	}
+
 	const bool gated = (m_link && !m_link->ready());
 
 	if (!gated && !m_net_paused && complete(m_frame))
@@ -1895,26 +2154,7 @@ void manager::frame_end(running_machine &machine)
 	// runs afterwards - it has to be the same rule that does the normal
 	// publish. Filling repeats an input, a visible artifact and nothing
 	// worse.
-	const frame_t target = m->m_frame + frame_t(m->m_delay);
-	if (m->m_published < target)
-	{
-		const frame_t first = m->m_published + 1;
-
-		// The local word is known the moment it is captured and never
-		// travels to reach us, so it goes straight into the ring. Only
-		// other peers' words come off the link.
-		for (frame_t f = first; f <= target; f++)
-		{
-			m->publish(f, m->m_local, m->m_pending);
-			m->batch_add(m->m_pending, f);
-		}
-
-		if (first != target)
-			osd_printf_info("netplay: filled stream gap %u..%u at frame %u\n",
-					unsigned(first), unsigned(target), unsigned(m->m_frame));
-
-		m->m_published = target;
-	}
+	m->publish_up_to(m->m_frame + frame_t(m->m_delay), m->m_pending);
 
 	if (m->m_link)
 		m->m_link->tick();
@@ -1925,6 +2165,38 @@ void manager::frame_end(running_machine &machine)
 	m->m_frame++;
 
 	// ~2 Hz while running. Often enough to watch, cheap enough to ignore.
+	// ARMED HERE, TAKEN AT THE SAFE POINT. A savestate may only be
+	// written where MAME writes one - determinism.txt 6.1 - and this is
+	// inside the input hook, which is not that place.
+	if ((m->m_snap_period != 0) && (m->m_local == 1)
+			&& (m->m_frame >= m->m_snap_due))
+	{
+		m->m_snap_due = m->m_frame + m->m_snap_period;
+		m->m_snap_pending = true;
+	}
+
+	// PUSH ONCE, AND ONLY AFTER THE SESSION IS LIVE. While gated the
+	// host is blocked inside this hook and never reaches a safe point, so
+	// a capture armed then would sit pending forever. do_capture already
+	// queues every chunk for sending, so arming it IS the push.
+	//
+	// AND NOT UNTIL A PENDING LOAD HAS LANDED. -state does not load
+	// before the first frame: running_machine::run calls handle_saveload
+	// once before its loop, but that returns without loading while
+	// m_scheduler.can_save() is false, and retries after each timeslice -
+	// so the state arrives a frame or two INTO the session. Measured on
+	// dino: frame 0 was still a cold boot and frame 1 was the snapshot.
+	// Pushing first would hand the guest a cold-booted machine and then
+	// leave the host jumping away from it, desynced for good.
+	if (m->m_push_wanted && !m->m_push_done && (m->m_local == 1)
+			&& m->m_link && m->m_link->ready()
+			&& !m->m_machine.save_or_load_pending())
+	{
+		m->m_push_done = true;
+		m->m_capture_pending = true;
+		osd_printf_info("netplay: pushing state to guests\n");
+	}
+
 	m->pump_resync_send();
 
 	if ((m->m_frame % 30) == 0)
@@ -1942,8 +2214,19 @@ void manager::frame_end(running_machine &machine)
 			m->m_blob.clear();
 			m->m_machine.popmessage("Resync gave up - no answer from the host");
 		}
-		else
+		else if (m->m_resync_id != 0)
 		{
+			// A transfer is under way: ask only for the chunks still missing.
+			m->send_resync_req();
+		}
+		else if ((m->m_resync_nag % 4) == 0)
+		{
+			// No chunk has arrived yet, so m_resync_id is still 0 and this
+			// would be another FRESH ask - which makes the host snapshot
+			// again, at a later frame, under a new id. Two blobs in flight
+			// then reset each other in take_resync_chunk every time the id
+			// flips and neither completes. Rate-limited to once every two
+			// seconds so a slow round trip cannot start a pile-up.
 			m->send_resync_req();
 		}
 	}
@@ -1975,6 +2258,8 @@ void manager::write_status()
 	std::fprintf(f, "driver=%s\n", m_machine.system().name);
 	std::fprintf(f, "inputmap=%016llx\n",
 			static_cast<unsigned long long>(m_map.digest()));
+	std::fprintf(f, "config=%016llx\n",
+			static_cast<unsigned long long>(m_map.config_digest()));
 	std::fprintf(f, "transport=%s\n", m_link ? m_link->name() : "none");
 	std::fprintf(f, "slot=%d\n", int(m_local));
 	std::fprintf(f, "players=%d\n", int(m_players));

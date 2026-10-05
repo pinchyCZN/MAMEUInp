@@ -16,6 +16,7 @@
 #include "netplay/netplay_mix.h"
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <memory>
 
@@ -27,6 +28,7 @@ namespace {
 using netplay::MIX_SEED;
 using netplay::mix_bytes;
 using netplay::finalise;
+using netplay::mix_string;
 
 // MAME writes an unset string option into an ini as the key padded with
 // spaces, so the value comes back as whitespace rather than empty. Testing
@@ -93,6 +95,7 @@ netplay_state_hash::netplay_state_hash(running_machine &machine, const char *log
 	, m_entry_log(nullptr)
 	, m_entry_frames()
 {
+	find_presave_mirrors();
 	open_entry_log();
 
 	m_layout_hash = compute_layout_hash();
@@ -167,6 +170,81 @@ u64 netplay_state_hash::compute_layout_hash() const
 //  CONTENTS
 //-------------------------------------------------
 
+//-------------------------------------------------
+//  find_presave_mirrors - which entries does
+//  dispatch_presave write?
+//-------------------------------------------------
+
+void netplay_state_hash::find_presave_mirrors()
+{
+	save_manager &save = m_machine.save();
+	const int count = save.registration_count();
+	m_mirror_names.clear();
+
+	// Copy every entry, run presave, see what moved. A handler's whole
+	// job is to write derived state INTO saved members, so what it
+	// touches is by definition a mirror: written on the way out, read
+	// only by postload on the way back in. Measured on dino, exactly
+	// three of 931 - maincpu m_save_sr, palette m_save_pen and
+	// m_save_contrast - and each is written only in presave() and read
+	// only in postload(). [verified m68kcpu.cpp, dipalette.cpp]
+	//
+	// WHY THIS MATTERS. A peer that writes a snapshot has them
+	// populated and a peer that did not does not, so a hash over every
+	// entry reports a desync that does not exist - for the rest of the
+	// session, since nothing clears them. Snapshots on the host alone
+	// would make desync detection useless from the first one onward.
+	//
+	// DISCOVERED, NOT A NAME LIST. Matching "m_save_" would be a guess
+	// about every driver and device in the tree; this asks the machine.
+	// Not `before(size_t(count))` - that parses as a function
+	// declaration, not a variable.
+	std::vector<std::vector<u8> > before;
+	before.resize(size_t(count));
+	for (int i = 0; i < count; i++)
+	{
+		void *base = nullptr;
+		u32 valsize = 0, valcount = 0;
+		if ((save.indexed_item(i, base, valsize, valcount) == nullptr)
+				|| (base == nullptr))
+			continue;
+
+		const size_t bytes = size_t(valsize) * size_t(valcount);
+		before[size_t(i)].assign(
+				reinterpret_cast<const u8 *>(base),
+				reinterpret_cast<const u8 *>(base) + bytes);
+	}
+
+	save.dispatch_presave();
+
+	unsigned found = 0;
+	for (int i = 0; i < count; i++)
+	{
+		void *base = nullptr;
+		u32 valsize = 0, valcount = 0;
+		const char *const name =
+				save.indexed_item(i, base, valsize, valcount);
+		if ((name == nullptr) || (base == nullptr))
+			continue;
+
+		const size_t bytes = size_t(valsize) * size_t(valcount);
+		if (before[size_t(i)].size() != bytes)
+			continue;
+		if (std::memcmp(before[size_t(i)].data(), base, bytes) == 0)
+			continue;
+
+		m_mirror_names.push_back(mix_string(MIX_SEED, name));
+		found++;
+		osd_printf_info("netplay: presave mirror excluded from hash: [%d] %s\n",
+				i, name);
+	}
+
+	if (found != 0)
+		osd_printf_info("netplay: %u of %d entries are presave mirrors\n",
+				found, count);
+}
+
+
 u64 netplay_state_hash::state_hash() const
 {
 	save_manager &save = m_machine.save();
@@ -189,10 +267,19 @@ u64 netplay_state_hash::state_hash() const
 	{
 		void *base = nullptr;
 		u32 valsize = 0, valcount = 0;
-		if (save.indexed_item(i, base, valsize, valcount) == nullptr)
+		const char *const name =
+				save.indexed_item(i, base, valsize, valcount);
+		if ((name == nullptr) || (base == nullptr))
 			continue;
-		if (base == nullptr)
-			continue;
+
+		// Mirrors are not emulation state; see find_presave_mirrors.
+		if (!m_mirror_names.empty())
+		{
+			const u64 nh = mix_string(MIX_SEED, name);
+			if (std::find(m_mirror_names.begin(), m_mirror_names.end(), nh)
+					!= m_mirror_names.end())
+				continue;
+		}
 
 		h = mix_bytes(h, base, size_t(valsize) * size_t(valcount));
 	}

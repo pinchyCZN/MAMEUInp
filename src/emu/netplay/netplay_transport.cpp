@@ -209,6 +209,7 @@ udp_link::udp_link(unsigned loss_pct, unsigned burst)
 	, m_welcomed(false)
 	, m_started(false)
 	, m_refused(false)
+	, m_refuse_code(0)
 	, m_ticks(0)
 	, m_join_len(0)
 	, m_sent(0)
@@ -517,8 +518,15 @@ size_t udp_link::recv(u8 *buf, size_t cap)
 			if (!m_refused && (got >= REFUSE_BYTES))
 			{
 				m_refused = true;
-				osd_printf_error("netplay: server refused the session - %s\n",
-						refuse_text(get_u8(buf + HEADER_BYTES)));
+				m_refuse_code = get_u8(buf + HEADER_BYTES);
+
+				// NOT osd_printf_error. In winui that channel becomes a modal
+				// win_message_box_utf8 (winmain.cpp), which blocks the main
+				// thread - so a refused peer hung instead of reporting, and the
+				// join gate could never give up either. The manager puts this
+				// on screen and exits.
+				osd_printf_info("netplay: server refused the session - %s\n",
+						refuse_text(m_refuse_code));
 			}
 			continue;
 		}

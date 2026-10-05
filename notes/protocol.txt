@@ -40,7 +40,14 @@ Table of Contents
       2.2. Control plane in band, bulk plane out of band
       2.3. A resync budget, not a resync loop
       2.4. Size and compression
-      2.5. This is most of rollback
+      2.5. The snapshot can be stamped ahead of the guest
+         2.5.1. Verifying it needs no synthetic input
+      2.6. Resuming a session instead of rejoining one
+         2.6.1. Almost none of it is new machinery
+         2.6.2. An unsolicited state is its own notification
+         2.6.3. The push must wait for the load to land
+         2.6.4. Measured end to end
+      2.7. This is most of rollback
    3. Packet layout
       3.1. Byte order is little-endian
       3.2. Common header, 12 bytes
@@ -868,7 +875,161 @@ Table of Contents
    compressed column will grow with real gameplay, so treat these as a
    lower bound on wire cost.
 
-2.5.  This is most of rollback
+2.5.  The snapshot can be stamped AHEAD of the guest, and must be used
+
+   The host leads. It is usually the faster peer, so it runs to its
+   maximum lead - which is exactly the input delay D, since no peer can
+   advance past input it does not have - and waits there. Its snapshot
+   therefore carries a frame number that can be greater than the frame
+   the guest is on when the blob lands.
+
+   Whether that happens is one comparison. The guest keeps playing
+   while the transfer is in flight, so
+
+       target = request_frame + round_trip
+       from   = request_frame + host_lead + one_way
+
+   and target < from reduces to
+
+       one_way < host_lead
+
+   Note what cancels: the transfer time. How long the blob takes does
+   not matter.
+
+   THIS IS WHY IT ONLY HAPPENS EARLY IN A SESSION. A cold guest cannot
+   hold 60 Hz, so the host sits at its full lead of D frames; once both
+   peers are throttle-limited the lead collapses to about the latency
+   and the comparison stops firing. Measured over a real link at D=10:
+   seventeen consecutive requests in the first fifteen seconds, every
+   one with from = target + 3 exactly, and none after that. [verified]
+
+   A STATE FROM THE FUTURE IS NOT A FAILURE. The blob is a complete
+   machine state, and it already contains the guest's own inputs for
+   the frames being skipped, because the host ran those frames with
+   them. So the guest jumps forward onto it: no replay, nothing to
+   re-run, the intervening frames are simply not emulated here.
+
+   Two things that follow, and the second is a trap:
+
+   o The guest never published words for frames it skipped - its
+     frame_end never ran for them - so the publish rule fills the gap
+     with a repeated word when it resumes. Up to D frames of the
+     guest's input repeat once. Measured: 8 frames at D=10.
+   o THE JUMP CAN LAND ONE FRAME PAST WHAT THE GUEST HAS PUBLISHED, and
+     then frame_begin waits for the guest's OWN word, which only
+     publishing can supply - the deadlock of 1.7 reached from the other
+     side. The shortfall is at most one frame, and the arithmetic says
+     why: the host has RUN every frame below `from`, which it could
+     only do holding the guest's words for them, so the guest has
+     published at least from - 1. The jump tops the stream up before
+     running.
+
+   The stale check remains, for the other direction only: a state
+   further behind than the ring can still account for cannot be
+   replayed forward. The two cases had shared one message, which said
+   "arrived too late" for a state that had arrived too EARLY.
+
+2.5.1.  Verifying it needs no synthetic input
+
+   tools/netplay_roundtrip.lua drives input on a fixed frame cycle, and
+   determinism.txt 6 already warns that such a harness must keep its
+   save and load points at the same phase of that cycle. A forward jump
+   SHIFTS THE PHASE by however many frames it skipped, so the generator
+   feeds the two peers differently afterwards and the comparison
+   measures the harness.
+
+   Measured both ways on a forward jump of 8 frames: with the generator
+   running, one entry of 931 - 68000 work RAM - differs for two frames
+   and then converges, which is the held-input signature of
+   determinism.txt 6. With no input generator at all, zero entries
+   differ and 828 frames compare clean. The jump itself is exact.
+   [verified]
+
+2.6.  Resuming a session instead of rejoining one
+
+   A guest that drops cannot be let back into a running session, and
+   the reason is not the server: a stalled host cannot produce a
+   snapshot. It is blocked inside the input hook, which is the only
+   thing stopping the frame it lacks input for from running, and the
+   safe point a capture needs is in running_machine::run - outside the
+   timeslice the hook is nested in. See determinism.txt 6.1.
+
+   So the session is RESTARTED from a snapshot rather than rejoined.
+   The host writes one every so often while playing, picks one
+   afterwards, and everyone starts again from there. That moves both
+   the capture and the serve to moments when the host is running
+   normally, which is what makes it work at all.
+
+   It also covers what a seamless rejoin never could: the HOST
+   crashing, a power cut, or stopping for the night.
+
+2.6.1.  Almost none of it is new machinery
+
+   +----------------------------+------------------------------------+
+   | Writing a snapshot         | save_manager::write_file at our    |
+   |                            | own safe point, same format and    |
+   |                            | path as MAME's own                 |
+   +----------------------------+------------------------------------+
+   | Loading one                | -state, which MAME already has     |
+   +----------------------------+------------------------------------+
+   | Telling the guest          | nothing - see 2.6.2                |
+   +----------------------------+------------------------------------+
+   | The guest adopting it      | the forward jump of 2.5            |
+   +----------------------------+------------------------------------+
+   | Completing a lossy         | the bitmap and nag already there   |
+   | transfer                   |                                    |
+   +----------------------------+------------------------------------+
+
+   schedule_save would write the file at the same point, but
+   handle_saveload pops "State successfully saved" every time, which is
+   noise once per period. A thumbnail goes beside it: save_snapshot
+   renders through its own render target into its own bitmap, so it
+   cannot perturb the session. [verified video.cpp]
+
+2.6.2.  An unsolicited state is its own notification
+
+   The guest accepts RESYNC chunks it never asked for, and arming its
+   own want flag on the first one is what makes that safe rather than
+   half-working: the missing-chunk bitmap, the nag and the give-up all
+   key off that flag, so a push with one chunk lost would otherwise
+   leave a partial blob nothing could finish and nobody would report.
+
+   So there is no new message type, no handshake flag and no server
+   involvement. The host knows to push because it can see its own
+   -state option; nothing has to be transmitted to decide it.
+
+   TWO FRAMES OF COSMETIC MISMATCH ARE UNAVOIDABLE. The guest cold
+   boots and runs a frame or two before the state lands, so briefly the
+   peers hold different machines. Nothing can prevent that short of
+   sharing the file in advance.
+
+2.6.3.  The push must wait for the load to land
+
+   -state DOES NOT load before the first frame. running_machine::run
+   calls handle_saveload once ahead of its loop, but that returns
+   without loading while m_scheduler.can_save() is false and retries
+   after each timeslice, so the state arrives a frame or two INTO the
+   session.
+
+   Measured on dino: frame 0 was still a cold boot and frame 1 was the
+   snapshot. A push armed before that hands the guest a cold-booted
+   machine and then leaves the host jumping away from it, desynced for
+   good. running_machine::save_or_load_pending() is the gate.
+   [verified]
+
+2.6.4.  Measured end to end
+
+   dino, snapshot every 10 s, then a resumed session:
+
+   o snapshot written at frame 600 exactly, 9.7 KB state and an 8.7 KB
+     PNG, and the session stayed bit-identical across it
+   o the resumed host's frame 1 hash equalled the original session's
+     frame 600, and frames 2-4 equalled 601-603 - it really resumed
+   o the guest was pushed that state unasked, adopted it, and matched
+     the host on every frame from the apply onward
+   o one frame differed before the push landed, as 2.6.2 describes
+
+2.7.  This is most of rollback
 
    In-band frame-tagged state plus "load it and replay the inputs from
    there" IS rollback, triggered rarely over a long window instead of
@@ -1286,6 +1447,45 @@ Table of Contents
    agreeing on every other digest. 1.2 requires the table to be total
    over digital fields; the digest is what makes that checkable between
    peers rather than only locally.
+
+4.2.1.  The inputmap digest covers DIP and config values
+
+   Structure alone is not enough. The digest mixes the driver name,
+   port tags, shared masks and player/bit assignments - and if it
+   stopped there, two peers with one DIP set differently would pass the
+   handshake and desync from frame 0. Free play against coins is the
+   easy case to picture; nothing in any log would say why.
+
+   So a config digest over every field's live value is folded in. A
+   mismatch is REFUSE_INPUTCFG, reported as "input map or DIP/config
+   settings differ".
+
+   Measured on dino, whose only config field is :DSWC Freeze: peers
+   with Freeze set differently produce config digests 1eb4e818772a6982
+   and 23b079461eec1790, and the second peer is refused at join and
+   exits saying so. Identical configuration gives identical digests.
+   [verified]
+
+   The netplay log carries one line per DIP and config field with its
+   value, because a refusal says the peers disagree but not about what;
+   diffing two logs says which switch it was.
+
+   ANALOG SETTINGS ARE THE SAME HAZARD and are covered too: keydelta,
+   centerdelta, sensitivity and reverse are per-field, are written to
+   the cfg file, and are in no savestate either. Two peers who set a
+   dial's sensitivity differently diverge every frame exactly as a DIP
+   mismatch does. A driver with no analog fields cannot show it, which
+   is why dino never did. Measured on arkanoid, which has two dials and
+   seven DIP fields: baseline config digest 4fe5e0830936f359, dial
+   sensitivity 60 gives f20934f869811cb1, and a changed Lives DIP gives
+   b67114854eda03a9. [verified]
+
+   WHAT THIS DOES NOT COVER. A resync cannot repair any of it -
+   ioport.cpp registers no save items at all, so none of it is in a
+   savestate. The handshake is the only place it can be caught, which
+   is why it is caught there rather than left to desync detection. A
+   setting changed mid-session through the Tab menu is not caught
+   either; that stays on the honour system. [open]
 
 4.3.  -drc belongs here, not in the safe list
 

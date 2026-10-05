@@ -248,6 +248,12 @@ private:
 	// the frames sent.
 	unsigned send_window(frame_t newest, unsigned span, unsigned fresh);
 
+	// Publishes our own word for every frame after m_published up to and
+	// including `through`, repeating `word` across any gap. THE one rule
+	// for what goes on the wire - see the comment at the frame_end call
+	// site for why a second mechanism must not exist.
+	void publish_up_to(frame_t through, input_word word);
+
 	// Ask the peers for the words this peer is missing, and answer such a
 	// request from another peer. notes/protocol.txt 1.7.4
 	void send_nak();
@@ -270,6 +276,7 @@ private:
 	void apply_resync();
 	void pump_resync_send();
 	void service_resync();
+	void take_snapshot();
 	void do_capture();
 	void test_corrupt();
 
@@ -371,6 +378,22 @@ private:
 	bool                        m_req_pending;
 	resync_req_payload          m_req;
 	bool                        m_resync_ready;
+
+	// The id of the transfer most recently applied. An unsolicited chunk
+	// carrying it is a straggler from a transfer already finished with,
+	// and must not be allowed to start a new one.
+	u32                         m_resync_done_id;
+
+	// Host side: snapshot every m_snap_period frames, keeping
+	// m_snap_keep of them, and push state to a guest once when the
+	// session started from one.
+	frame_t                     m_snap_period;
+	unsigned                    m_snap_keep;
+	unsigned                    m_snap_next;
+	frame_t                     m_snap_due;
+	bool                        m_push_wanted;
+	bool                        m_push_done;
+	bool                        m_snap_pending;
 	bool                        m_capture_pending;
 	unsigned                    m_unsafe;       // safe points can_save refused
 
@@ -379,6 +402,7 @@ private:
 	frame_t                     m_published;
 	bool                        m_own_hole;     // reported once
 	bool                        m_stall_warned;
+	bool                        m_refused_reported;
 
 	// Chat. osd_ticks drives the expiry, which is safe only because none
 	// of this reaches emulated state - see determinism.txt 2.2 for the

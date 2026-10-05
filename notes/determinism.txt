@@ -389,6 +389,42 @@ Table of Contents
    emulation. It stayed hidden until stalls became long enough to reach
    the pump at all.
 
+6.4.  Presave mirrors are not emulation state, and a hash must skip them
+
+   dispatch_presave writes derived state INTO saved members so a
+   savestate carries it. Those members are written on the way out and
+   read only by postload on the way back in - nothing reads them while
+   the machine runs.
+
+   Measured on dino, exactly three of 931: maincpu m_save_sr, and the
+   palette's m_save_pen and m_save_contrast. Each is written only in
+   presave() and read only in postload(). [verified m68kcpu.cpp
+   presave/postload, dipalette.cpp 117 and 134]
+
+   WHY IT MATTERS. A peer that writes a snapshot has them populated and
+   a peer that did not does not, and nothing ever clears them - so a
+   hash over every registered entry reports a desync that does not
+   exist, for the rest of the session. Host-only snapshots would have
+   made desync detection useless from the first one onward. The
+   emulation is unaffected; only the detector was wrong.
+
+   They are found by measurement rather than by name: copy every entry,
+   call dispatch_presave, see what moved. Matching "m_save_" would be a
+   guess about every device in the tree.
+
+6.5.  indexed_item's order is not stable across a machine's life
+
+   save_manager::allow_registration(false) sorts the entry list by name
+   when registration closes, so an index taken before that names a
+   different entry afterwards. Measured: index 53 was maincpu
+   m_save_sr before the sort and m_mmu_urp_aptr after it. [verified
+   save.cpp allow_registration]
+
+   So anything that remembers entries across that boundary must key on
+   the NAME. Capture, restore and the layout digest are all safe: they
+   walk the list within one session, after the sort, and both peers see
+   the same order.
+
 7.  Open questions
 
    o -numprocessors and the threaded rasterizers. MAME dispatches some

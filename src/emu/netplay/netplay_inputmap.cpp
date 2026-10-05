@@ -80,6 +80,7 @@ u32 classify(const ioport_field &field, player_t &player)
 
 inputmap::inputmap()
 	: m_digest(0)
+	, m_config_digest(0)
 	, m_players(0)
 	, m_analog_seen(0)
 	, m_fits(false)
@@ -99,6 +100,7 @@ bool inputmap::build(running_machine &machine)
 	m_logical.clear();
 	m_unowned.clear();
 	m_digest = 0;
+	m_config_digest = 0;
 	m_players = 0;
 	m_analog_seen = 0;
 	m_fits = false;
@@ -207,6 +209,65 @@ bool inputmap::build(running_machine &machine)
 		}
 	}
 
+	// CONFIG DIGEST: the per-field live values that DIP switches, config
+	// settings and toggles are stored in.
+	//
+	// ioport_port::read does `result ^= m_live->defvalue`, and that port
+	// defvalue is where all of it ends up. inject_port writes
+	// live().digital and never touches defvalue, so none of it travels
+	// and none of it is overwritten: two peers with one DIP set
+	// differently read different values every frame and diverge
+	// immediately and permanently, with nothing in any log to say why.
+	// Free play on one side against coins on the other is the easy case
+	// to picture.
+	//
+	// HASHED PER FIELD, NOT PER PORT, AND THE REASON IS ORDERING. The
+	// port's defvalue is recomputed from these fields by
+	// ioport_port::update_defvalue, whose only callers sit in
+	// ioport_manager::frame_update AFTER the netplay hook this runs from -
+	// and nothing calls it when the config file is read. So at this point
+	// the port defvalue has never absorbed the loaded settings, and
+	// hashing it would give two differently configured peers the same
+	// digest: a check that looks present and detects nothing.
+	// ioport_manager::load_config writes field.live().value directly,
+	// which is why that is the field to read.
+	//
+	// Over the WHOLE port list, not m_ports: a port only enters m_ports
+	// when it has a digital field that is neither analog nor a toggle, so
+	// a port of nothing but analog or nothing but toggles is absent from
+	// it - and its settings matter just the same. Disabled fields are
+	// included too, because whether a field is enabled depends on other
+	// fields' values through PORT_CONDITION, and a digest should not
+	// depend on evaluating that.
+	u64 c = MIX_SEED;
+	for (auto &entry : portlist)
+	{
+		c = mix_string(c, entry.first.c_str());
+		for (const ioport_field &field : entry.second->fields())
+		{
+			c = mix(c, (u64(field.mask()) << 32)
+					| u64(field.live().value & field.mask()));
+			c = mix(c, field.live().toggle ? 1u : 0u);
+
+			// ANALOG SETTINGS ARE THE SAME CLASS OF HAZARD AS A DIP.
+			// keydelta, centerdelta, sensitivity and reverse are per-field,
+			// are written to the cfg file (ioport.cpp save_game_inputs), and
+			// are in no savestate - so two peers who set a dial's
+			// sensitivity differently diverge every frame exactly as a DIP
+			// mismatch does. A driver with no analog fields cannot show it,
+			// which is why dino never did.
+			const analog_field *const an = field.live().analog;
+			if (an != nullptr)
+			{
+				c = mix(c, u64(u32(an->sensitivity())));
+				c = mix(c, u64(u32(an->delta())));
+				c = mix(c, u64(u32(an->centerdelta())));
+				c = mix(c, an->reverse() ? 1u : 0u);
+			}
+		}
+	}
+	m_config_digest = finalise(c);
+
 	// the digest covers the whole mapping, in the order built above
 	u64 h = MIX_SEED;
 	h = mix_string(h, machine.system().name);
@@ -221,6 +282,10 @@ bool inputmap::build(running_machine &machine)
 		for (const owned &o : pe.fields)
 			h = mix(h, (u64(o.mask) << 16) | (u64(o.player) << 8) | u64(o.bit));
 	}
+	// Folded in, so a DIP difference is refused by the same check that
+	// refuses a driver difference. protocol.txt 4.2
+	h = mix(h, m_config_digest);
+
 	m_digest = finalise(h);
 
 	m_fits = m_unowned.empty();

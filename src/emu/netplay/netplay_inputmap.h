@@ -63,6 +63,14 @@ public:
 	// other digest. notes/protocol.txt 4.2
 	u64 digest() const { return m_digest; }
 
+	// Every port's defvalue, hashed. DIP switches, config settings,
+	// toggle state and active-low polarity all live there, none of it is
+	// on the wire, and injection never touches it - so two peers set
+	// differently diverge every frame, forever. Folded into digest() so
+	// the handshake refuses that, and exposed separately so a mismatch
+	// can be told apart from a structural one by comparing two logs.
+	u64 config_digest() const { return m_config_digest; }
+
 	player_t players() const { return m_players; }
 	unsigned digital_used() const { return unsigned(m_logical.size()); }
 	unsigned analog_seen() const { return m_analog_seen; }
@@ -110,6 +118,7 @@ private:
 	std::vector<u32>                                m_logical;  // bit -> logical id
 	std::vector<std::string>                        m_unowned;
 	u64                                             m_digest;
+	u64                                             m_config_digest;
 	player_t                                        m_players;
 	unsigned                                        m_analog_seen;
 	bool                                            m_fits;

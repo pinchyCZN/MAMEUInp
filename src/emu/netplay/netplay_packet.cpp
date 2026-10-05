@@ -269,7 +269,7 @@ const char *refuse_text(u8 reason)
 	case REFUSE_DRIVER:   return "different system or ROM set";
 	case REFUSE_BIOS:     return "different -bios";
 	case REFUSE_DIPSW:    return "DIP or config settings differ";
-	case REFUSE_INPUTCFG: return "translation tables differ";
+	case REFUSE_INPUTCFG: return "input map or DIP/config settings differ";
 	case REFUSE_NVRAM:    return "NVRAM or EEPROM differs";
 	case REFUSE_LAYOUT:   return "savestate layout differs";
 	case REFUSE_PERF:     return "frameskip, cheat or drc differs";
