@@ -20,6 +20,7 @@
 #include "resource.h"
 #include "mui_opts.h"
 #include "netplayui.h"
+#include "netplaypick.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -685,11 +686,7 @@ static void game_enable(HWND hDlg)
 	// A guest editing the session settings would be editing a display: the
 	// host chose them and the server already has them.
 	const bool editable = (!s_g_active || s_g_amhost);
-	// IDC_NPG_PICK is left alone: it is disabled in the template until the
-	// game picker exists. The System edit stays enabled whatever the game
-	// state, because a disabled edit draws its text in grey and that is
-	// unreadable on a dark theme; Host game being disabled already makes
-	// the box inert while a game is up.
+	EnableWindow(GetDlgItem(hDlg, IDC_NPG_PICK), !s_g_active);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_PLAYERS), editable);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_DELAY), editable);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_BATCH), editable);
@@ -1111,6 +1108,21 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 					lobby_close(hDlg, nullptr);
 					KillTimer(hDlg, LOBBY_TIMER);
 					EndDialog(hDlg, 2);     // the caller launches
+				}
+				return true;
+			}
+
+		case IDC_NPG_PICK:
+			{
+				char now[32];
+				GetDlgItemTextA(hDlg, IDC_NPG_DRIVER, now, sizeof(now));
+				const int cur = (now[0] != 0) ? driver_list::find(now) : s_selected;
+
+				const int got = NetplayPickGame(hDlg, cur);
+				if (got >= 0)
+				{
+					SetDlgItemTextA(hDlg, IDC_NPG_DRIVER, driver_list::driver(got).name);
+					show_fullname(hDlg, driver_list::driver(got).name);
 				}
 				return true;
 			}

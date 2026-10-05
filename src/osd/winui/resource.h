@@ -530,6 +530,17 @@
 #define IDC_NPG_START                   2342
 #define IDC_NPG_ROSTER                  2343
 #define IDC_NPG_RESULT                  2344
+// NETPLAY: the game picker
+#define IDD_NETPLAY_PICK                2350
+#define IDC_NPP_VIEW_LIST               2351
+#define IDC_NPP_VIEW_GROUPED            2352
+#define IDC_NPP_VIEW_DETAILS            2353
+#define IDC_NPP_FILTER                  2354
+#define IDC_NPP_F_MACHINE               2355
+#define IDC_NPP_F_MANUF                 2356
+#define IDC_NPP_F_DIR                   2357
+#define IDC_NPP_LISTVIEW                2358
+#define IDC_NPP_COUNT                   2359
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

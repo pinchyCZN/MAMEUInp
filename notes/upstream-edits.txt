@@ -261,7 +261,8 @@ Table of Contents
    +------------------------------+--------------------------------+
    | src/osd/winui/resource.h     | ID_FILE_NETPLAY 40200,         |
    |                              | IDD_NETPLAY 2300-2310,         |
-   |                              | IDD_NETPLAY_LOBBY 2320-2344.   |
+   |                              | IDD_NETPLAY_LOBBY 2320-2344,   |
+   |                              | IDD_NETPLAY_PICK 2350-2359.    |
    |                              | All clear of the upstream run  |
    |                              | so a rebase need not place     |
    |                              | them                           |
@@ -271,8 +272,9 @@ Table of Contents
    |                              | status-bar hint.               |
    |                              | ID_MESS_OPEN_SOFTWARE is left  |
    |                              | orphaned, handler intact. Also |
-   |                              | the IDD_NETPLAY and            |
-   |                              | IDD_NETPLAY_LOBBY dialog       |
+   |                              | the IDD_NETPLAY,               |
+   |                              | IDD_NETPLAY_LOBBY and          |
+   |                              | IDD_NETPLAY_PICK dialog        |
    |                              | templates                      |
    +------------------------------+--------------------------------+
    | src/osd/winui/winui.cpp      | three unrelated frontend       |
@@ -299,8 +301,9 @@ Table of Contents
    |                              | is static and defined far      |
    |                              | below                          |
    +------------------------------+--------------------------------+
-   | scripts/src/osd/winui.lua    | (cont) netplayui.cpp added to  |
-   |                              | the osd_winui sources          |
+   | scripts/src/osd/winui.lua    | (cont) netplayui.cpp and       |
+   |                              | netplaypick.cpp added to the   |
+   |                              | osd_winui sources              |
    +------------------------------+--------------------------------+
    | src/osd/winui/ui_opts.h      | default list_mode was 5, one   |
    |                              | past the last valid view, so a |

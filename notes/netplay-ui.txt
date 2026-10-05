@@ -232,8 +232,47 @@ Table of Contents
 
 5.4.  Phase 4: the game picker
 
-   The friendly list: the main window's listview, its filters and its
-   audit data, in a page of the dialog.
+   Select Game opens a list of every system, and writes the chosen one
+   into the System box. It picks a NAME; it does not host, join or
+   audit. The audit stays where section 4 puts it, on Host and Join.
+
+   IT IS MAMEUI'S OWN PICKER CONTROL, NOT A COPY OF ITS LIST. picker.cpp
+   subclasses any listview and routes every decision back through a
+   callback table, so the main window is just another caller of it. Ours
+   supplies four columns - machine, directory, manufacturer, year, all
+   read straight off driver_list - and gets header sorting, the three
+   view modes and the clone grouping without inheriting the folder tree,
+   the filter flags, the icon cache or the column-customise menu. Those
+   are not suppressed; they are the main window's callbacks, and we
+   never pass them.
+
+   GROUPED VIEW IS A SORT ORDER AND A DRAWING INDENT, NOT A TREE. Rows
+   stay one flat list: the compare callback puts clones next to their
+   parent and the draw path indents them. That is why filtering needs no
+   special handling at all - a clone whose parent the filter removed is
+   simply a row with nothing above it.
+
+   pfnGetOffsetChildren returns false. True would send the picker into
+   treeview.cpp GetParentFound, which answers from the MAIN window's
+   current folder and filters - a question about a different list. The
+   cost is that a clone whose parent was filtered out is still drawn
+   indented, which is cosmetic.
+
+   NO TIMER ON THE FILTER. It rebuilds on every keystroke, which is what
+   the main window does (winui.cpp ID_TOOLBAR_EDIT, whose own comment
+   proposes a 200 ms timer that was never added). Row text is fetched
+   through the item-string callback only for rows actually drawn, so a
+   keystroke costs one substring test per driver and an insert per
+   match, not 17000 string formats.
+
+   The filter checkboxes are OR across whatever is ticked. With none
+   ticked nothing is filtered, whatever has been typed.
+
+   Three settings are remembered - view mode, sort column, sort reverse -
+   in netplaypick.ini. Its own file because netplay.ini belongs to the
+   lobby and is rewritten wholesale when that saves, so a second writer
+   there would lose them on every launch. Column widths are not
+   remembered; the columns are fixed and so are their defaults.
 
 6.  The lobby protocol
 
