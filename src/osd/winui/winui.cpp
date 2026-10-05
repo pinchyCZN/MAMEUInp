@@ -488,6 +488,7 @@ static bool keyboard_state[4096]; /* __code_max #defines the number of internal 
 
 /* search */
 static char g_SearchText[2048];
+static int g_SearchColumn = SEARCH_MACHINE;
 /* table copied from windows/inputs.c */
 // table entry indices
 #define MAME_KEY      0
@@ -746,6 +747,9 @@ static const int s_nPickers[] =
 static ResizeItem toolbar_resize_items[] =
 {
 	{ RA_ID,   { ID_TOOLBAR_EDIT }, true,  RA_LEFT | RA_TOP, NULL },
+	{ RA_ID,   { IDC_SEARCH_MACHINE }, true, RA_LEFT | RA_TOP, NULL },
+	{ RA_ID,   { IDC_SEARCH_MANUF },   true, RA_LEFT | RA_TOP, NULL },
+	{ RA_ID,   { IDC_SEARCH_DIR },     true, RA_LEFT | RA_TOP, NULL },
 	{ RA_END,  { 0 },               false, 0,                 NULL }
 };
 
@@ -1241,6 +1245,13 @@ void SetNumOptionFolders(int count)
 const char* GetSearchText(void)
 {
 	return g_SearchText;
+}
+
+
+// NETPLAY
+int GetSearchColumn(void)
+{
+	return g_SearchColumn;
 }
 
 
@@ -2944,6 +2955,45 @@ static HWND InitToolbar(HWND hParent)
 	win_create_window_ex_utf8( 0L, "Edit", SEARCH_PROMPT, WS_CHILD | WS_BORDER | WS_VISIBLE | ES_LEFT,
 					iPosX, iPosY, 200, iHeight, hToolBar, (HMENU)ID_TOOLBAR_EDIT, hInst, NULL );
 
+	// NETPLAY: which column that box filters on. Children of the toolbar
+	// like the edit above, so they travel with it.
+	{
+		static const struct
+		{
+			int         id;
+			const char  *text;
+			int         width;
+		} cols[] =
+		{
+			{ IDC_SEARCH_MACHINE, "Machine",      66 },
+			{ IDC_SEARCH_MANUF,   "Manufacturer", 92 },
+			{ IDC_SEARCH_DIR,     "Directory",    74 }
+		};
+
+		int x = iPosX + 200 + 12;
+		for (int i = 0; i < 3; i++)
+		{
+			DWORD style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
+			if (i == 0)
+				style |= WS_GROUP;    // mutual exclusion starts here
+
+			HWND hRadio = win_create_window_ex_utf8( 0L, "Button", cols[i].text, style,
+					x, iPosY, cols[i].width, iHeight, hToolBar,
+					(HMENU)(INT_PTR)cols[i].id, hInst, NULL );
+
+			// Created controls get the system font, which is bigger than the
+			// toolbar and clips the labels.
+			if (hRadio)
+				SendMessage(hRadio, WM_SETFONT,
+						(WPARAM)GetStockObject(DEFAULT_GUI_FONT), MAKELPARAM(TRUE, 0));
+
+			x += cols[i].width;
+		}
+
+		CheckRadioButton(hToolBar, IDC_SEARCH_MACHINE, IDC_SEARCH_DIR,
+				IDC_SEARCH_MACHINE);
+	}
+
 	return hToolBar;
 }
 
@@ -4114,6 +4164,21 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
         */
 	case ID_VIEW_FULLSCREEN:
 		SwitchFullScreenMode();
+		break;
+
+	// NETPLAY: the search box filters on one column, chosen here
+	case IDC_SEARCH_MACHINE:
+	case IDC_SEARCH_MANUF:
+	case IDC_SEARCH_DIR:
+		{
+			const int col = (id == IDC_SEARCH_MANUF) ? SEARCH_MANUFACTURER :
+					(id == IDC_SEARCH_DIR) ? SEARCH_DIRECTORY : SEARCH_MACHINE;
+			if (col != g_SearchColumn)
+			{
+				g_SearchColumn = col;
+				ResetListView();
+			}
+		}
 		break;
 
 	case ID_TOOLBAR_EDIT:

@@ -334,10 +334,28 @@ BOOL GameFiltered(int nGame, DWORD dwMask)
 		}
 	}
 
+	// NETPLAY: one column, chosen by the toolbar radios. It used to search
+	// the full name and the directory together, so a directory match no
+	// longer turns up under Machine.
 	if (strlen(GetSearchText()) && _stricmp(GetSearchText(), SEARCH_PROMPT))
-		if (MyStrStrI(driver_list::driver(nGame).type.fullname(),GetSearchText()) == NULL &&
-			MyStrStrI(driver_list::driver(nGame).name,GetSearchText()) == NULL)
-				return true;
+	{
+		const char *haystack;
+		switch (GetSearchColumn())
+		{
+		case SEARCH_MANUFACTURER:
+			haystack = driver_list::driver(nGame).manufacturer;
+			break;
+		case SEARCH_DIRECTORY:
+			haystack = driver_list::driver(nGame).name;
+			break;
+		default:
+			haystack = driver_list::driver(nGame).type.fullname();
+			break;
+		}
+
+		if (MyStrStrI(haystack, GetSearchText()) == NULL)
+			return true;
+	}
 
 	/*Filter Text is already global*/
 	if (MyStrStrI(driver_list::driver(nGame).type.fullname(),GetFilterText()) == NULL &&

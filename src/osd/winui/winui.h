@@ -108,4 +108,14 @@ BOOL MouseHasBeenMoved(void);
 
 const char * GetSearchText(void);
 
+// NETPLAY: which column the toolbar search box filters on. Deliberately
+// not persisted - it resets to the machine name every start.
+enum
+{
+	SEARCH_MACHINE = 0,
+	SEARCH_MANUFACTURER,
+	SEARCH_DIRECTORY
+};
+int GetSearchColumn(void);
+
 #endif

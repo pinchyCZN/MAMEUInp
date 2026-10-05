@@ -305,6 +305,24 @@ Table of Contents
    |                              | netplaypick.cpp added to the   |
    |                              | osd_winui sources              |
    +------------------------------+--------------------------------+
+   | src/osd/winui/winui.cpp      | (cont) three radio buttons     |
+   |                              | beside the toolbar search box  |
+   |                              | choosing which column it       |
+   |                              | filters on, their resize       |
+   |                              | entries, and the command       |
+   |                              | handler. g_SearchColumn is not |
+   |                              | persisted                      |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/winui.h        | GetSearchColumn and the        |
+   |                              | SEARCH_* enum it returns       |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/treeview.cpp   | GameFiltered searches the one  |
+   |                              | column GetSearchColumn names.  |
+   |                              | It searched full name and      |
+   |                              | directory together before, so  |
+   |                              | a directory match no longer    |
+   |                              | appears under Machine          |
+   +------------------------------+--------------------------------+
    | src/osd/winui/ui_opts.h      | default list_mode was 5, one   |
    |                              | past the last valid view, so a |
    |                              | fresh install could not get    |

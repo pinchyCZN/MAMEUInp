@@ -541,6 +541,10 @@
 #define IDC_NPP_F_DIR                   2357
 #define IDC_NPP_LISTVIEW                2358
 #define IDC_NPP_COUNT                   2359
+// NETPLAY: the main window search-column radios
+#define IDC_SEARCH_MACHINE              2360
+#define IDC_SEARCH_MANUF                2361
+#define IDC_SEARCH_DIR                  2362
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
