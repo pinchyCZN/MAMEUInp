@@ -491,6 +491,18 @@
 // rather than 40168 to leave the upstream run of IDs alone, so a
 // rebase does not have to care where this landed.
 #define ID_FILE_NETPLAY                 40200
+// NETPLAY: direct connect dialog
+#define IDD_NETPLAY                     2300
+#define IDC_NP_HOST                     2301
+#define IDC_NP_PORT                     2302
+#define IDC_NP_PLAYERS                  2303
+#define IDC_NP_SLOT                     2304
+#define IDC_NP_DELAY                    2305
+#define IDC_NP_BATCH                    2306
+#define IDC_NP_SAVESTATES               2307
+#define IDC_NP_SENDCONFIG               2308
+#define IDC_NP_VERIFY                   2309
+#define IDC_NP_RESULT                   2310
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

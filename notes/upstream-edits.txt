@@ -286,6 +286,15 @@ Table of Contents
    |                              | the app before any menu is     |
    |                              | reachable                      |
    +------------------------------+--------------------------------+
+   | src/osd/winui/winui.cpp      | (cont) ID_FILE_NETPLAY opens   |
+   |                              | the direct connect dialog and  |
+   |                              | launches with it, plus a       |
+   |                              | forward declaration of         |
+   |                              | MamePlayGameWithOptions        |
+   +------------------------------+--------------------------------+
+   | scripts/src/osd/winui.lua    | (cont) netplayui.cpp added to  |
+   |                              | the osd_winui sources          |
+   +------------------------------+--------------------------------+
    | src/osd/winui/ui_opts.h      | default list_mode was 5, one   |
    |                              | past the last valid view, so a |
    |                              | fresh install could not get    |

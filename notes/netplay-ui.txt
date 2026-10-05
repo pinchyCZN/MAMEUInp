@@ -1,0 +1,233 @@
+MAMEUI Netplay                                             Design Note
+
+
+                      THE NETPLAY FRONT END
+
+
+Abstract
+
+   How netplay is reached from the MAMEUI frontend: a direct connect
+   dialog first, a lobby after it. Records the decisions so later work
+   can be checked against them, and amended when they change.
+
+Table of Contents
+
+   1. Scope
+      1.1. What this is not
+   2. Where the pieces live
+      2.1. The handoff from frontend to emulator
+   3. Settings: session or player
+      3.1. Delay MUST match, batch need not
+   4. Auditing is the join button
+   5. Phases
+      5.1. Phase 1: direct connect
+      5.2. Phase 2: the lobby
+      5.3. Phase 3: host, join, start
+      5.4. Phase 4: the game picker
+   6. The lobby protocol, sketched
+   7. Open questions
+
+1.  Scope
+
+   Two or more friends playing one game well. Everyone knows the server
+   address before they start.
+
+1.1.  What this is not
+
+   o NO SERVER BROWSER. Kaillera greeted you with a list of servers.
+     Ours does not: the address is typed in or remembered.
+   o ONE GAME AT A TIME. The server hosts a single session. Concurrent
+     games are out of scope, which keeps the server's state one table
+     rather than a table per game.
+   o No accounts, no ranking, no NAT traversal.
+
+2.  Where the pieces live
+
+   Two programs talk to the server, and they are not the same program.
+
+   +------------------+------------------+------------------+
+   | Conversation     | Who speaks it    | Transport        |
+   +==================+==================+==================+
+   | lobby, chat,     | the FRONTEND,    | TCP, text        |
+   | host, join, start| before MAME runs |                  |
+   +------------------+------------------+------------------+
+   | input, resync,   | the EMULATOR     | UDP, binary      |
+   | in-game chat     |                  | (protocol.txt)   |
+   +------------------+------------------+------------------+
+
+   TCP for the lobby because lists and chat need order and delivery,
+   which the game channel deliberately does not provide. Building that
+   again over UDP for a chat box would repeat the retransmission work
+   protocol.txt 1.7 and 3.10 exist to solve, for none of the reasons.
+
+   Text for the lobby because it can be driven from nc against a VPS
+   with no debugger attached. The game channel stays binary: it is
+   deadline-bound and byte-counted, and the lobby is neither.
+
+2.1.  The handoff from frontend to emulator
+
+   The frontend sits in the lobby, then launches the emulator, which
+   opens its OWN connection and joins. The server has to recognise that
+   new peer as the player who was in a given slot.
+
+   +----------------------+----------------------------------------+
+   | How                  | Cost                                   |
+   +======================+========================================+
+   | slot + session id,   | nothing new. A peer could claim        |
+   | passed on the launch | another's slot, which for a            |
+   |                      | private group is not a threat          |
+   +----------------------+----------------------------------------+
+   | one-time token in    | JOIN is exactly full at 32 bytes,      |
+   | JOIN                 | so it needs a resize or its own        |
+   |                      | message                                |
+   +----------------------+----------------------------------------+
+   | source address       | do not: two players behind one         |
+   |                      | NAT break it                           |
+   +----------------------+----------------------------------------+
+
+   Slot plus session id for now; the token is the upgrade if this ever
+   leaves a friends-only setting.
+
+   MAMEUI RUNS MAME IN-PROCESS. RunMAME builds a windows_osd_interface
+   and a mame_machine_manager in the frontend's own process, so a
+   netplay launch is the frontend configuring netplay and calling
+   MamePlayGameWithOptions. There is no second process to signal.
+   [verified winui.cpp RunMAME]
+
+   The consequence worth remembering: netplay configuration set for one
+   launch is still set for the next one. It has to be cleared when the
+   emulator returns, or the next ordinary game starts trying to netplay.
+
+3.  Settings: session or player
+
+   The rule: if two peers disagreeing about it would desync or
+   deadlock, it belongs to the session and the host owns it.
+
+   +-------------------------+------------------------------------+
+   | Setting                 | Scope                              |
+   +=========================+====================================+
+   | driver                  | session                            |
+   +-------------------------+------------------------------------+
+   | delay                   | session - MUST match, see 3.1      |
+   +-------------------------+------------------------------------+
+   | batch                   | session by choice, not necessity   |
+   +-------------------------+------------------------------------+
+   | players                 | session                            |
+   +-------------------------+------------------------------------+
+   | savestates, send config | session, host policy               |
+   +-------------------------+------------------------------------+
+   | snapshot period, keep   | host only - only the host writes   |
+   |                         | them                               |
+   +-------------------------+------------------------------------+
+   | redundancy depth        | not a setting. Derived from delay  |
+   |                         | and batch, protocol.txt 1.7.1      |
+   +-------------------------+------------------------------------+
+   | player name             | per player                         |
+   +-------------------------+------------------------------------+
+   | slot                    | assigned by the server             |
+   +-------------------------+------------------------------------+
+
+   So the dialog shows everything and a joiner can edit almost none of
+   it. DIP, config and analog settings are NOT in this table: the host
+   pushes them and the guest adopts them (protocol.txt 3.13), so the
+   lobby never has to ask about them.
+
+3.1.  Delay MUST match, batch need not
+
+   Startup primes frames 0 .. delay-1 as complete with neutral words,
+   and publishing begins at frame delay. A peer at delay 4 therefore
+   wants real words from frame 4, and a peer at delay 10 sends nothing
+   before frame 10 - so the low-delay peer stalls at frame 4 for good
+   while the other runs to 10 and stalls waiting for it. Both wedge, at
+   startup, every time. [verified netplay_manager.cpp]
+
+   Batch is free to differ: it only decides when a peer flushes its own
+   words, never which frames they are for.
+
+   BETTER THAN CHECKING IT: welcome_payload has exactly two spare pad
+   bytes, which is exactly enough for delay and batch. The host sets
+   them, the server hands them to every joiner in WELCOME, and a
+   mismatch becomes unrepresentable. "All parties must use the same
+   speed" is a message no player should have to see.
+
+4.  Auditing is the join button
+
+   A host may pick any system, audited or not. Selecting it audits that
+   one system and reports what is missing; once it passes, the game is
+   offered to the room.
+
+   THE JOIN BUTTON IS THE AUDIT. Clicking it audits that one set on the
+   joiner's machine and, if anything is wrong, says which file - not
+   "you cannot join". The common case is one wrong ROM in an otherwise
+   working set, and being told which one is the difference between
+   fixing it and giving up.
+
+   This is deliberately not a pre-filtered list. A list that silently
+   omits systems you nearly have is the Kaillera behaviour being
+   replaced.
+
+   The handshake still refuses a genuine mismatch when the emulator
+   joins (protocol.txt 4), but by then everyone has launched. Auditing
+   in the frontend moves that discovery to before the launch, where it
+   can be read and acted on.
+
+5.  Phases
+
+5.1.  Phase 1: direct connect
+
+   No lobby, no server change, nothing new on the wire. A dialog takes
+   the address, port, slot, player count and session settings, and
+   launches the selected system with them.
+
+   This is the batch files with a front end, and it is worth having on
+   its own. It also settles the launch mechanics - configure, run,
+   clear - in isolation from any protocol work, and every later phase
+   uses them.
+
+5.2.  Phase 2: the lobby
+
+   TCP channel, player names, chat. No game concept yet: connecting
+   shows who else is connected and lets them talk.
+
+5.3.  Phase 3: host, join, start
+
+   Create a game, list it, join it, start it. The server grows a lobby
+   layer beside its relay. WELCOME starts carrying delay and batch.
+
+5.4.  Phase 4: the game picker
+
+   The friendly list: the main window's listview, its filters and its
+   audit data, in a page of the dialog.
+
+6.  The lobby protocol, sketched
+
+   Lines of text, request and response. Not settled; this is the shape.
+
+       > HELLO pinchy
+       < PLAYERS pinchy,dave
+       < CHAT dave hello
+       > CREATE dino 2 delay=6 batch=1 savestates=1
+       < GAME dino host=pinchy 1/2 delay=6 savestates=1
+       > JOIN
+       < GAME dino host=pinchy 2/2 delay=6 savestates=1
+       > START
+       < LAUNCH session=7 slot=2 delay=6 batch=1 savestates=1
+       < ERROR not the host
+
+   START is the host's alone. LAUNCH is what every client turns into an
+   emulator launch.
+
+7.  Open questions
+
+   o Does the frontend hold the lobby connection while the emulator
+     runs? Holding it lets the server see the game end and keeps the
+     room alive; it also means the frontend is doing two things at
+     once.
+   o Lobby chat and in-game chat are separate channels on separate
+     transports. Bridging them is a nice thing and a deliberate one -
+     the server would have to relay between the two.
+   o Netplay settings reach the emulator as environment variables
+     today. Real MAME options would be tidier and would match how
+     -netplay_hashlog was added, but it is a wider change than phase 1
+     needs.
+   o Player names have no uniqueness rule yet.

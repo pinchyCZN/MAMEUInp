@@ -41,6 +41,7 @@
 #include "zippath.h"
 
 #include "resource.h"
+#include "netplayui.h"   // NETPLAY
 #include "resource.hm"
 #include "mui_util.h"
 #include "mui_audit.h"
@@ -245,6 +246,7 @@ static BOOL             OnIdle(HWND hWnd);
 static void             OnSize(HWND hwnd, UINT state, int width, int height);
 static LRESULT CALLBACK MameWindowProc(HWND hwnd,UINT message,WPARAM wParam,LPARAM lParam);
 
+static void             MamePlayGameWithOptions(int nGame, const play_options *playopts);   // NETPLAY
 static void             SetView(int menu_id);
 static void             ResetListView(void);
 static void             UpdateGameList(BOOL bUpdateRomAudit, BOOL bUpdateSampleAudit);
@@ -3940,6 +3942,26 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 
 	switch (id)
 	{
+	// NETPLAY: configure, run, then clear - the emulator runs in this
+	// process, so leaving it set would netplay the next ordinary game.
+	case ID_FILE_NETPLAY:
+		{
+			int nGame = Picker_GetSelectedItem(hwndList);
+			if (nGame < 0)
+				break;
+
+			netplay_launch cfg;
+			if (!NetplayDialog(hMain, nGame, &cfg))
+				break;
+
+			play_options playopts;
+			memset(&playopts, 0, sizeof(playopts));
+			NetplayApply(cfg);
+			MamePlayGameWithOptions(nGame, &playopts);
+			NetplayClear();
+		}
+		break;
+
 	case ID_FILE_PLAY:
 		MamePlayGame();
 		return true;

@@ -59,7 +59,7 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "Loa&d Savestate...",          ID_FILE_LOADSTATE, GRAYED
         MENUITEM SEPARATOR
-        MENUITEM "&Netplay...",                 ID_FILE_NETPLAY, GRAYED
+        MENUITEM "&Netplay...",                 ID_FILE_NETPLAY
         MENUITEM SEPARATOR
         MENUITEM "Pr&operties",                 ID_GAME_PROPERTIES
         MENUITEM SEPARATOR
@@ -1080,6 +1080,42 @@ BEGIN
                     HIDC_FILTER_EDIT
     DEFPUSHBUTTON   "&OK",IDOK,42,189,50,14
     PUSHBUTTON      "&Cancel",IDCANCEL,98,189,50,14
+END
+
+IDD_NETPLAY DIALOGEX 0, 0, 252, 232
+STYLE DS_MODALFRAME | DS_3DLOOK | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Netplay"
+FONT 8, "Tahoma", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Server",IDC_STATIC,6,4,240,42
+    LTEXT           "Address",IDC_STATIC,14,18,32,8
+    EDITTEXT        IDC_NP_HOST,50,16,120,12,ES_AUTOHSCROLL
+    LTEXT           "Port",IDC_STATIC,178,18,18,8
+    EDITTEXT        IDC_NP_PORT,198,16,40,12,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Players",IDC_STATIC,14,32,32,8
+    EDITTEXT        IDC_NP_PLAYERS,50,30,28,12,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "You are player",IDC_STATIC,90,32,52,8
+    EDITTEXT        IDC_NP_SLOT,146,30,28,12,ES_AUTOHSCROLL | ES_NUMBER
+
+    GROUPBOX        "Session",IDC_STATIC,6,50,240,58
+    LTEXT           "Input delay (frames)",IDC_STATIC,14,64,70,8
+    EDITTEXT        IDC_NP_DELAY,88,62,28,12,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Frames per packet",IDC_STATIC,130,64,64,8
+    EDITTEXT        IDC_NP_BATCH,198,62,28,12,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "All players must use the same delay. Higher is smoother.",
+                    IDC_STATIC,14,78,212,8
+    CONTROL         "Allow savestates and resync",IDC_NP_SAVESTATES,"Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP,14,90,110,10
+    CONTROL         "Send my settings to guests",IDC_NP_SENDCONFIG,"Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP,130,90,110,10
+
+    GROUPBOX        "ROMs",IDC_STATIC,6,112,240,88
+    PUSHBUTTON      "&Check ROMs",IDC_NP_VERIFY,14,124,60,14
+    EDITTEXT        IDC_NP_RESULT,14,142,224,52,ES_MULTILINE |
+                    ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
+
+    DEFPUSHBUTTON   "&Launch",IDOK,130,208,54,16
+    PUSHBUTTON      "Cancel",IDCANCEL,190,208,54,16
 END
 
 IDD_RESET DIALOGEX 0, 0, 190, 122
