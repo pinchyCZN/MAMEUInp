@@ -55,7 +55,8 @@ enum msg_type : u8
 	MSG_CHAT    = 0x0a,
 	MSG_BYE     = 0x0b,
 	MSG_UICMD   = 0x0c,
-	MSG_RESYNC_REQ = 0x0d
+	MSG_RESYNC_REQ = 0x0d,
+	MSG_NAK     = 0x0e
 };
 
 // 3.4
@@ -271,6 +272,47 @@ size_t build_stall(u8 *buf, size_t cap, u16 session, frame_t frame,
 		player_t from, u8 want, u8 count);
 bool parse_stall(const u8 *buf, size_t len, frame_t &frame, player_t &from,
 		u8 &want, u8 &count);
+
+// NAK - a peer answering "no" to a request it cannot serve.
+//
+//     base_frame   the frame the refusal was decided on, informational
+//     player_mask  the SENDER, as in CHAT and STALL
+//     about        which request is refused, NAK_ABOUT_*
+//     reason       why, NAK_* - only so the message on screen is true
+//
+// WHY A TYPE AND NOT A ZERO-LENGTH RESYNC. A resync carrying nothing
+// would have to mean "no" in three places that each currently read it
+// as corruption: parse_resync rejects a header-only datagram,
+// state_blob::begin_receive treats total or chunks of 0 as invalid, and
+// take_resync_chunk arms the guest's own want flag on any unsolicited
+// chunk - so a refusal would switch the puller ON and leave it chasing
+// a transfer that will never arrive. One branch in poll_link is less
+// code and cannot be misread.
+//
+// NO STATE IS KEPT ACROSS REQUESTS. Every request gets its own answer
+// and its own message; a peer that asks ten times is told ten times.
+size_t build_nak(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, u8 about, u8 reason);
+bool parse_nak(const u8 *buf, size_t len, player_t &from, u8 &about,
+		u8 &reason);
+
+// what a NAK is about
+enum nak_about : u8
+{
+	NAK_ABOUT_RESYNC = 0x01
+};
+
+// why. Reported to the player, so each one has to be true of the case
+// it names - "not supported" for a state that was merely too big would
+// send somebody hunting the wrong problem.
+enum nak_reason : u8
+{
+	NAK_DISABLED  = 0x01,      // savestates off for this session
+	NAK_TOO_LARGE = 0x02,      // over the resync size limit
+	NAK_FAILED    = 0x03       // the capture itself failed
+};
+
+const char *nak_text(u8 reason);
 const char *uicmd_text(u8 cmd);
 
 // ---- resync ----
@@ -308,6 +350,7 @@ constexpr size_t RESYNC_REQ_FIXED = 8;
 constexpr size_t CHAT_MAX_TEXT = 128;
 
 constexpr size_t STALL_BYTES = HEADER_BYTES + 4;
+constexpr size_t NAK_BYTES = HEADER_BYTES + 4;
 
 // The most words any one datagram can carry, derived rather than picked:
 // a receiver sized by this cannot be overrun by a legal packet, and a

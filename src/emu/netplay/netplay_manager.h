@@ -277,6 +277,8 @@ private:
 	void pump_resync_send();
 	void service_resync();
 	void take_snapshot();
+	void send_nak(u8 about, u8 reason);
+	void take_nak(u8 about, u8 reason);
 	void do_capture();
 	void test_corrupt();
 
@@ -421,6 +423,13 @@ private:
 	// frames later, so a test can check that nothing is published while
 	// it is open. See the header comment on the other NETPLAY_TEST vars.
 	frame_t                     m_test_chat_at;
+
+	// DIAGNOSTIC: refuse every resync request, so the NAK path can be
+	// exercised without a driver whose state is genuinely too large.
+	// Redundant once NETPLAY_SAVESTATES lands - that will refuse for
+	// real, with the same reason code.
+	bool                        m_test_nak;
+	frame_t                     m_test_resync_every;
 	frame_t                     m_test_chat_hold;
 	char                        m_chat_prompt[CHAT_MAX_TEXT + 8];
 

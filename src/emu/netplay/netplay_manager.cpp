@@ -131,6 +131,8 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_chat_open(false)
 	, m_chat_len(0)
 	, m_test_chat_at(0)
+	, m_test_nak(false)
+	, m_test_resync_every(0)
 	, m_test_chat_hold(0)
 	, m_replaying(false)
 	, m_replay_until(0)
@@ -262,6 +264,9 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 		osd_printf_info("netplay: will push state to guests%s\n",
 				from_state ? " (started from -state)" : "");
 	m_test_chat_hold = frame_t(env_uint("NETPLAY_TEST_CHAT_HOLD", 0));
+	m_test_nak = env_flag("NETPLAY_TEST_NAK");
+	m_test_resync_every =
+			frame_t(env_uint("NETPLAY_TEST_RESYNC_EVERY", 0));
 
 	machine.add_notifier(MACHINE_NOTIFY_EXIT,
 			machine_notify_delegate(&manager::on_exit, this));
@@ -726,6 +731,15 @@ void manager::poll_link()
 			continue;
 		}
 
+		player_t said_no = 0;
+		u8 nk_about = 0, nk_reason = 0;
+		if (parse_nak(buf, len, said_no, nk_about, nk_reason))
+		{
+			if (said_no != m_local)
+				take_nak(nk_about, nk_reason);
+			continue;
+		}
+
 		player_t said = 0;
 		char line[CHAT_MAX_TEXT + 1];
 		if (parse_chat(buf, len, said, line))
@@ -1097,6 +1111,16 @@ void manager::serve_resync(const resync_req_payload &req)
 	// NOT pause - it carries on playing while the blob goes out.
 	if (req.id == 0)
 	{
+		// SAY NO RATHER THAN NOTHING. Silence is indistinguishable from a
+		// lost packet, so the asker nags for ten seconds and then reports a
+		// timeout - which sends whoever is playing after a network fault
+		// that is not there.
+		if (m_test_nak)
+		{
+			send_nak(NAK_ABOUT_RESYNC, NAK_DISABLED);
+			return;
+		}
+
 		m_capture_pending = true;
 		return;
 	}
@@ -1118,7 +1142,9 @@ void manager::do_capture()
 {
 	if (!m_blob.capture(m_machine))
 	{
-		osd_printf_info("netplay: resync refused, state too large\n");
+		// The asker is told too, or it would wait out the nag for a
+		// refusal already decided here.
+		send_nak(NAK_ABOUT_RESYNC, NAK_TOO_LARGE);
 		m_machine.popmessage("Resync refused: this driver state is too large");
 		return;
 	}
@@ -1331,6 +1357,52 @@ void manager::apply_resync()
 	m_machine.popmessage("Resynced - catching up %d frames",
 			int(was - from));
 }
+
+//-------------------------------------------------
+//  refusing a request, and being refused
+//-------------------------------------------------
+
+void manager::send_nak(u8 about, u8 reason)
+{
+	if (!m_link)
+		return;
+
+	u8 buf[MAX_DATAGRAM];
+	const size_t len = build_nak(buf, sizeof(buf), 0, m_frame, m_local,
+			about, reason);
+	if (len == 0)
+		return;
+
+	m_link->send(buf, len);
+	osd_printf_info("netplay: refused a request - %s\n", nak_text(reason));
+}
+
+
+void manager::take_nak(u8 about, u8 reason)
+{
+	if (about != NAK_ABOUT_RESYNC)
+		return;
+
+	// END THE ATTEMPT, REMEMBER NOTHING. Clearing these is not a record
+	// of the refusal, it is tearing down the request that was in flight:
+	// without it the nag keeps re-asking for ten seconds and then
+	// reports a timeout instead of the reason the host just gave.
+	//
+	// Deliberately no sticky flag. Asking again asks again, and is
+	// answered again - a refusal is cheap and a remembered one is state
+	// that can go stale the moment the host changes a setting.
+	if (!m_resync_wanted)
+		return;                 // not ours, or already over
+
+	m_resync_wanted = false;
+	m_resync_nag = 0;
+	m_resync_id = 0;
+	m_blob.clear();
+
+	osd_printf_info("netplay: resync refused - %s\n", nak_text(reason));
+	m_machine.popmessage("Resync unavailable: %s", nak_text(reason));
+}
+
 
 //-------------------------------------------------
 //  take_snapshot - a rolling savestate the host can
@@ -2008,6 +2080,13 @@ void manager::frame_begin(running_machine &machine)
 	if ((m->m_test_corrupt_at != 0) && (m->m_frame == m->m_test_corrupt_at))
 		m->test_corrupt();
 	if ((m->m_test_resync_at != 0) && (m->m_frame == m->m_test_resync_at))
+		request_resync(machine);
+
+	// DIAGNOSTIC: stand in for a player leaning on the key. A refusal
+	// must be answered every single time, so this asks repeatedly.
+	if ((m->m_test_resync_every != 0)
+			&& ((m->m_frame % m->m_test_resync_every) == 0)
+			&& (m->m_frame != 0))
 		request_resync(machine);
 	if ((m->m_test_chat_at != 0) && (m->m_frame == m->m_test_chat_at))
 	{

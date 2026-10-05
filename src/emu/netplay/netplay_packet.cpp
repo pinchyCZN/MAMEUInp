@@ -77,7 +77,7 @@ bool parse_header(const u8 *buf, size_t len, packet_header &head)
 	head.reserved = get_u8(buf + 11);
 
 	// A zero type is always malformed - see the numbering note in the header.
-	if ((head.type == 0) || (head.type > MSG_RESYNC_REQ))
+	if ((head.type == 0) || (head.type > MSG_NAK))
 		return false;
 	if (head.version != PROTOCOL_VERSION)
 		return false;
@@ -423,6 +423,64 @@ bool parse_stall(const u8 *buf, size_t len, frame_t &frame, player_t &from,
 
 	frame = head.base_frame;
 	return true;
+}
+
+
+size_t build_nak(u8 *buf, size_t cap, u16 session, frame_t frame,
+		player_t from, u8 about, u8 reason)
+{
+	if ((about == 0) || (reason == 0))
+		return 0;
+
+	const size_t len = control_head(buf, cap, MSG_NAK, session, frame, 4);
+	if (len == 0)
+		return 0;
+
+	// control_head zeroes bytes 8..11; the sender goes in player_mask.
+	put_u8(buf + 9, slot_bit(from));
+	put_u8(buf + HEADER_BYTES + 0, about);
+	put_u8(buf + HEADER_BYTES + 1, reason);
+	put_u16(buf + HEADER_BYTES + 2, 0);
+	return len;
+}
+
+
+bool parse_nak(const u8 *buf, size_t len, player_t &from, u8 &about,
+		u8 &reason)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_NAK))
+		return false;
+	if (len != NAK_BYTES)
+		return false;
+
+	from = 0;
+	for (player_t pl = 1; pl <= MAX_PLAYERS; pl++)
+	{
+		if (head.player_mask == slot_bit(pl))
+		{
+			from = pl;
+			break;
+		}
+	}
+	if (from == 0)
+		return false;
+
+	about = get_u8(buf + HEADER_BYTES + 0);
+	reason = get_u8(buf + HEADER_BYTES + 1);
+	return (about != 0) && (reason != 0);
+}
+
+
+const char *nak_text(u8 reason)
+{
+	switch (reason)
+	{
+	case NAK_DISABLED:  return "savestates are off for this session";
+	case NAK_TOO_LARGE: return "this driver's state is too large";
+	case NAK_FAILED:    return "the host could not capture its state";
+	default:            return "refused for an unknown reason";
+	}
 }
 
 

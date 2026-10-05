@@ -480,6 +480,7 @@ void relay::run()
 		case MSG_RESYNC:
 		case MSG_CHAT:
 		case MSG_STALL:
+		case MSG_NAK:
 			// All forwarded verbatim. A UI command carries the frame it takes
 			// effect on and a resync chunk carries its own index and id, so the
 			// server has no more reason to understand any of them than it does

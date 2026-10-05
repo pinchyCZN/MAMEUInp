@@ -55,6 +55,13 @@ Table of Contents
       3.4. Flags
       3.5. INPUT, the hot path
       3.6. HASH
+      3.7. RSYNCRQ and RESYNC
+      3.8. What a resync does to the two ends
+      3.9. CHAT
+      3.10. STALL, the retransmission request
+         3.10.1. Measured
+      3.11. Typing suppresses local input, and cannot do so instantly
+      3.12. NAK, refusing a request
    4. Handshake
       4.1. Sequence
       4.2. What JOIN carries
@@ -1146,6 +1153,9 @@ Table of Contents
    | 0x0d | RSYNCRQ | peer -> all | ask for state, or name missing       |
    |      |         |             | chunks, 3.7                          |
    +------+---------+-------------+--------------------------------------+
+   | 0x0e | NAK     | peer -> all | a request this peer will not serve,  |
+   |      |         |             | 3.12                                 |
+   +------+---------+-------------+--------------------------------------+
 
    Numbering starts at 1 so that a zero first byte is always a malformed
    packet rather than a valid message.
@@ -1387,6 +1397,42 @@ Table of Contents
    Measured on dino, peer B composing for 119 frames while peer A
    played: A published a non-neutral word on 63 of those frames, B on
    0 of 119, and the two stayed bit-identical throughout.  [verified]
+
+3.12.  NAK, refusing a request
+
+       header            12 bytes, 3.2. player_mask is the SENDER
+       about              1 byte, which request is refused
+       reason             1 byte, why
+       pad                2 bytes, zero
+
+   SILENCE IS NOT AN ANSWER. A host that simply ignores a resync
+   request is indistinguishable from a lost packet, so the asker nags
+   for about ten seconds and then reports a timeout - sending whoever
+   is playing after a network fault that does not exist. The reason
+   byte is carried only so the message on screen is true: "not
+   supported" for a state that was merely too large would send them
+   after the wrong problem instead.
+
+   A TYPE RATHER THAN A ZERO-LENGTH RESYNC, and the reason is that a
+   resync carrying nothing would have to mean "no" in three places
+   that each read it as corruption today: parse_resync rejects a
+   header-only datagram, state_blob::begin_receive treats a total or
+   chunk count of zero as invalid, and take_resync_chunk arms the
+   guest's own want flag on any unsolicited chunk - so a refusal would
+   switch the puller ON and leave it chasing a transfer that will never
+   arrive (2.6.2). One branch in poll_link is less code and cannot be
+   misread.
+
+   NO STATE IS KEPT ACROSS REQUESTS. Receiving one tears down the
+   attempt in flight - the want flag, the nag counter, the part-built
+   blob - and remembers nothing. Asking again asks again and is
+   answered again. A remembered refusal would go stale the moment the
+   host changed a setting, and the saving is one datagram.
+
+   Measured on dino with the host refusing: a guest asking every 60
+   frames sent 11 requests, the host sent 11 refusals, the guest
+   reported 11, no request timed out, and lockstep held across all 717
+   frames. [verified]
 
 4.  Handshake
 
