@@ -44,7 +44,7 @@ static std::string  s_g_driver;
 static std::string  s_g_host;
 static unsigned     s_g_count = 0;
 static unsigned     s_g_players = 2;
-static unsigned     s_g_delay = 6;
+static unsigned     s_g_delay = 8;
 static unsigned     s_g_batch = 1;
 static bool         s_g_savestates = true;
 static bool         s_g_config = true;

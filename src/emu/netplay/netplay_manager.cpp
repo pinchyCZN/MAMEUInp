@@ -2026,6 +2026,12 @@ void manager::wait_for_input()
 	// there the dimming is the feedback that tells the player it worked.
 	bool we_paused = false;
 
+	// Whether this hold put a warning on screen, so the clear at the end
+	// only fires when there is something to clear. Most stalls are a few
+	// milliseconds and say nothing; clearing after those would wipe a
+	// message the driver or the UI had just posted.
+	bool warned_here = false;
+
 	u64 since_keepalive = 0;
 
 	while (m_net_paused || gated_now() || !complete(m_frame))
@@ -2125,6 +2131,7 @@ void manager::wait_for_input()
 			m_machine.popmessage(
 					"Waiting for player %d - the connection may be down",
 					int(who));
+			warned_here = true;
 		}
 
 		m_held_polls++;
@@ -2149,6 +2156,7 @@ void manager::wait_for_input()
 			m_machine.popmessage("Waiting for %s (frame %u, %llu s)\n\nEscape to quit.",
 					missing_text(), unsigned(m_frame),
 					static_cast<unsigned long long>(m_held_polls / 1000));
+			warned_here = true;
 		}
 
 		if (m_test_pause_hold != 0)
@@ -2158,8 +2166,8 @@ void manager::wait_for_input()
 	if (we_paused)
 		m_machine.resume();
 
-	if (!m_net_paused && complete(m_frame))
-		m_machine.popmessage("");      // clear the warning
+	if (warned_here && !m_net_paused && complete(m_frame))
+		m_machine.popmessage();  // clear the warning
 
 	m_held_polls = 0;
 }
