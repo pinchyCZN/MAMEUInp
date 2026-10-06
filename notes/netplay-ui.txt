@@ -240,6 +240,33 @@ Table of Contents
    forces it to zero in that case anyway - the control only says what
    the session would do regardless.
 
+   NEITHER CAN FIRE OUTSIDE A SESSION. setup() resets the instance and
+   returns when NETPLAY_MODE is unset, so with no session there is no
+   manager and no netplay code runs at all; the snapshot trigger then
+   adds m_local == 1 on top. Clearing the variables in NetplayClear is
+   hygiene, not the guard.
+
+   THE STATE BOX HOLDS THE BARE NAME -state TAKES - np01, not np01.sta
+   and not a path. machine.cpp schedule_load hands it to
+   compose_saveload_filename, which builds
+   <state_directory>/<statename>/<name>.sta. Empty means a cold boot.
+
+   It is checked before CREATE and again before START, because the box
+   stays editable while the room fills. The check resolves the folder
+   the way MAME does rather than assuming the system name: statename is
+   an option, and %g is only its default.
+
+   A state with savestates unchecked is refused outright. The guests are
+   given the host state through the existing push, and with savestates
+   off they would cold-boot against a host that did not - desynced from
+   the first frame with no way back.
+
+   Only the host sends one: c.state is filled from the box for slot 1
+   alone, and it reaches the emulator as OPTION_STATE through
+   play_options rather than the environment, because it is one of MAME
+   own options. That is the path File -> Play and Load State already
+   uses.
+
    The slot each player is given is the roster position, and LAUNCH
    carries it. JOIN then names that slot on the wire - protocol.txt
    4.2.2 - so the relay seats everyone where the lobby said.

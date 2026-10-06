@@ -4007,6 +4007,12 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 
 			play_options playopts;
 			memset(&playopts, 0, sizeof(playopts));
+
+			// NETPLAY: the state to start from is a MAME option, not one of
+			// ours, so it travels here rather than in the environment.
+			if (cfg.state[0] != 0)
+				playopts.state = cfg.state;
+
 			NetplayApply(cfg);
 			MamePlayGameWithOptions(cfg.game, &playopts);
 			NetplayClear();

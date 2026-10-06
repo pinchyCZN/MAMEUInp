@@ -63,6 +63,7 @@ static void defaults(netplay_launch &c)
 	c.savestates = true;
 	c.send_config = true;
 	c.autosave = 0;
+	c.state[0] = 0;
 	c.game = -1;
 }
 
@@ -732,6 +733,7 @@ static void game_enable(HWND hDlg)
 	const bool saves_on =
 			(IsDlgButtonChecked(hDlg, IDC_NPG_SAVESTATES) == BST_CHECKED);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_AUTOSAVE), editable && saves_on);
+	EnableWindow(GetDlgItem(hDlg, IDC_NPG_STATE), editable && saves_on);
 }
 
 
@@ -791,6 +793,86 @@ static bool rom_gate(HWND hDlg, const std::string &driver, int &idx)
 }
 
 
+//-------------------------------------------------
+//  starting from a savestate
+//-------------------------------------------------
+
+// MAME composes <state_directory>/<statename>/<name>.sta, where statename is
+// the state_name option with %g standing for the system - machine.cpp
+// get_statename. Only %g is expanded here; the other code is %d_ for image
+// devices, which no arcade driver produces.
+static std::string state_folder(int drv)
+{
+	std::string tpl = MameUIGlobal().state_name();
+	if (tpl.empty())
+		tpl = "%g";
+
+	const size_t dot = tpl.find_last_of('.');
+	if (dot != std::string::npos)
+		tpl.erase(dot);
+
+	const size_t g = tpl.find("%g");
+	if (g != std::string::npos)
+		tpl.replace(g, 2, driver_list::driver(drv).name);
+
+	// Anything still unexpanded needs a running machine to resolve. The
+	// default is the system name, and that is where a state of ours lives.
+	if (tpl.find('%') != std::string::npos)
+		tpl = driver_list::driver(drv).name;
+
+	return tpl;
+}
+
+
+static bool state_exists(int drv, const char *name)
+{
+	if ((drv < 0) || (name == nullptr) || (name[0] == 0))
+		return false;
+
+	std::string rel = state_folder(drv);
+	rel += PATH_SEPARATOR;
+	rel += name;
+	rel += ".sta";
+
+	emu_file f(MameUIGlobal().state_directory(), OPEN_FLAG_READ);
+	return f.open(rel) == osd_file::error::NONE;
+}
+
+
+// Checked before CREATE and again before START, because the box can be
+// edited in between. A guest is never asked: it is handed the host's machine
+// by the existing state push and loads no file of its own.
+static bool state_gate(HWND hDlg, int drv)
+{
+	char name[64];
+	GetDlgItemTextA(hDlg, IDC_NPG_STATE, name, sizeof(name));
+	if (name[0] == 0)
+		return true;            // a cold boot is the ordinary case
+
+	if (IsDlgButtonChecked(hDlg, IDC_NPG_SAVESTATES) != BST_CHECKED)
+	{
+		game_result(hDlg, "Starting from a state needs savestates enabled.\n"
+				"The guests are given that state, and with savestates off\n"
+				"they would cold-boot and desync from the first frame.");
+		return false;
+	}
+
+	if (!state_exists(drv, name))
+	{
+		std::string why("No state ");
+		why += name;
+		why += " for ";
+		why += driver_list::driver(drv).name;
+		why += "\n\nThe name is the bare one -state takes, like np01 -\n";
+		why += "no .sta and no path.";
+		game_result(hDlg, why);
+		return false;
+	}
+
+	return true;
+}
+
+
 static void game_host(HWND hDlg)
 {
 	char driver[32];
@@ -798,6 +880,8 @@ static void game_host(HWND hDlg)
 
 	int idx = -1;
 	if (!rom_gate(hDlg, driver, idx))
+		return;
+	if (!state_gate(hDlg, idx))
 		return;
 
 	char line[256];
@@ -857,6 +941,10 @@ static bool game_launch(HWND hDlg, const std::string &arg)
 	// Local to this player and never on the wire: only the host writes
 	// snapshots, so a guest asking for them would get nothing anyway.
 	c.autosave = (c.slot == 1) ? autosave_get(hDlg) : 0;
+
+	c.state[0] = 0;
+	if (c.slot == 1)
+		GetDlgItemTextA(hDlg, IDC_NPG_STATE, c.state, sizeof(c.state));
 
 	// The lobby and the relay are the same machine and port.
 	GetDlgItemTextA(hDlg, IDC_NPL_HOST, c.host, sizeof(c.host));
@@ -1189,8 +1277,14 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 			return true;
 
 		case IDC_NPG_START:
-			lobby_send_line("START");
-			return true;
+			{
+				const int drv = s_g_driver.empty()
+						? -1 : driver_list::find(s_g_driver.c_str());
+				if ((drv >= 0) && !state_gate(hDlg, drv))
+					return true;
+				lobby_send_line("START");
+				return true;
+			}
 
 		case IDOK:
 			lobby_send_chat(hDlg);
