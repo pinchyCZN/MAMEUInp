@@ -249,12 +249,22 @@ Table of Contents
    |                              | the OSD                        |
    +------------------------------+--------------------------------+
    | src/frontend/mame/ui/ui.cpp  | netplay_locks_ui gate on the   |
-   |                              | keys that would desync:        |
-   |                              | pause, fast-forward, reset,    |
-   |                              | F4, tilt, save/load state.     |
-   |                              | Ctrl+Shift+R resync. Chat keys |
-   |                              | in handler_ingame and the chat |
-   |                              | overlay in update_and_render   |
+   |                              | keys that would desync: pause, |
+   |                              | fast-forward, reset, F4, tilt, |
+   |                              | save/load state. Ctrl+Shift+R  |
+   |                              | resync. Chat keys in           |
+   |                              | handler_ingame and the chat    |
+   |                              | overlay in update_and_render.  |
+   |                              | sample_ui_keys called before   |
+   |                              | the handler                    |
+   +------------------------------+--------------------------------+
+   | src/frontend/mame/ui/ui.cpp  | (cont) request_quit forces the |
+   |                              | confirmation while a session   |
+   |                              | is live. confirm_quit defaults |
+   |                              | to 0, so one stray Escape -    |
+   |                              | the key that also leaves the   |
+   |                              | state and settings menus -     |
+   |                              | ended the game for everybody   |
    +------------------------------+--------------------------------+
    | src/osd/windows/window.cpp   | window title carries           |
    |                              | NETPLAY_TAG                    |

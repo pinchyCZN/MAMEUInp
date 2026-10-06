@@ -147,6 +147,17 @@ public:
 	// Consumes typed characters, Enter, Escape and Backspace.
 	static void chat_keys(running_machine &machine);
 
+	// Sampled once per RENDERED frame, from update_and_render, because
+	// that runs whatever owns the UI and whether or not the machine is
+	// paused. The input hook does not: it stops with the scheduler, so a
+	// key pressed while a menu is up would still look new afterwards.
+	static void sample_ui_keys(running_machine &machine);
+
+	// True only on the frame Enter went down. Replaces
+	// input_manager::code_pressed_once for the chat keys - see the
+	// comment on sample_ui_keys in the .cpp.
+	static bool enter_edge(running_machine &machine);
+
 	// Oldest first. Returns how many were written, at most max.
 	static unsigned chat_view(running_machine &machine, chat_line *out,
 			unsigned max);
@@ -436,6 +447,11 @@ private:
 	};
 	chat_entry                  m_chat[CHAT_LINES];
 	unsigned                    m_chat_n;       // total ever added
+	// Enter, tracked by us rather than by input_manager. One edge shared
+	// by opening and sending, so a key held across both cannot do both.
+	bool                        m_enter_prev;
+	bool                        m_enter_edge;
+
 	bool                        m_chat_open;
 	char                        m_chat_edit[CHAT_MAX_TEXT + 1];
 	unsigned                    m_chat_len;

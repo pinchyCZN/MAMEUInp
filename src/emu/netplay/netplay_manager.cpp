@@ -132,6 +132,8 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_stall_warned(false)
 	, m_refused_reported(false)
 	, m_chat_n(0)
+	, m_enter_prev(false)
+	, m_enter_edge(false)
 	, m_chat_open(false)
 	, m_chat_len(0)
 	, m_test_chat_at(0)
@@ -1759,6 +1761,44 @@ bool manager::chat_begin(running_machine &machine)
 }
 
 
+//-------------------------------------------------
+//  sample_ui_keys / enter_edge
+//-------------------------------------------------
+
+// WHY NOT input_manager::code_pressed_once. That function detects the edge
+// with a memory it updates only when it is called, and the chat test lives in
+// handler_ingame, which does not run while a menu owns the UI. Menus close on
+// IPT_UI_SELECT through the ui_input queue, which never touches that memory -
+// so the Enter that dismissed a menu still looked like a brand new press to
+// the next handler_ingame, and opened the chat box.
+//
+// Sampled from update_and_render instead, which runs for every rendered frame
+// no matter which handler is active and no matter whether the machine is
+// paused. The press that closes a menu therefore consumes its own edge on the
+// frame it happens.
+void manager::sample_ui_keys(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return;
+
+	const bool down = machine.input().code_pressed(KEYCODE_ENTER)
+			|| machine.input().code_pressed(KEYCODE_ENTER_PAD);
+
+	m->m_enter_edge = down && !m->m_enter_prev;
+	m->m_enter_prev = down;
+}
+
+
+bool manager::enter_edge(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return false;
+	return m->m_enter_edge;
+}
+
+
 void manager::chat_keys(running_machine &machine)
 {
 	manager *const m = active();
@@ -1775,8 +1815,9 @@ void manager::chat_keys(running_machine &machine)
 		return;
 	}
 
-	if (machine.input().code_pressed_once(KEYCODE_ENTER)
-			|| machine.input().code_pressed_once(KEYCODE_ENTER_PAD))
+	// The same edge the box was opened with, so one held press cannot
+	// open the box and immediately send an empty line.
+	if (enter_edge(machine))
 	{
 		m->chat_send();
 		m->m_chat_open = false;

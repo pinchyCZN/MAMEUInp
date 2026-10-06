@@ -414,6 +414,11 @@ void mame_ui_manager::update_and_render(render_container &container)
 	if (machine().phase() >= machine_phase::RESET)
 		mame_machine_manager::instance()->cheat().render_text(*this, container);
 
+	// NETPLAY: before the handler, so the edge it reads is this frame's.
+	// Here rather than in the input hook because this runs whatever owns
+	// the UI and whether or not the machine is paused.
+	netplay::manager::sample_ui_keys(machine());
+
 	// call the current UI handler
 	m_handler_param = m_handler_callback(container);
 
@@ -1145,7 +1150,7 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 		netplay::manager::chat_keys(machine());
 		return 0;
 	}
-	if (machine().input().code_pressed_once(KEYCODE_ENTER)
+	if (netplay::manager::enter_edge(machine())
 			&& netplay::manager::chat_begin(machine()))
 	{
 		return 0;
@@ -1391,7 +1396,9 @@ uint32_t mame_ui_manager::handler_ingame(render_container &container)
 void mame_ui_manager::request_quit()
 {
 	using namespace std::placeholders;
-	if (!machine().options().confirm_quit())
+
+	if (!machine().options().confirm_quit()
+			&& !netplay::manager::session_active(machine()))
 		machine().schedule_exit();
 	else
 		set_handler(ui_callback_type::GENERAL, std::bind(&mame_ui_manager::handler_confirm_quit, this, _1));
