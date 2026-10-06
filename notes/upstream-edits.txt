@@ -266,6 +266,16 @@ Table of Contents
    |                              | state and settings menus -     |
    |                              | ended the game for everybody   |
    +------------------------------+--------------------------------+
+   | src/frontend/mame/ui/ui.cpp  | (cont) display_startup_screens |
+   |                              | suppresses the system          |
+   |                              | information screen while       |
+   |                              | netplay is configured. Every   |
+   |                              | peer holds the others until it |
+   |                              | dismisses that screen, and     |
+   |                              | skip_gameinfo is per-install   |
+   |                              | so it cannot be relied on at   |
+   |                              | the far end                    |
+   +------------------------------+--------------------------------+
    | src/osd/windows/window.cpp   | window title carries           |
    |                              | NETPLAY_TAG                    |
    +------------------------------+--------------------------------+

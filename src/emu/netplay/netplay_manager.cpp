@@ -941,6 +941,12 @@ bool manager::session_active(running_machine &machine)
 }
 
 
+bool manager::configured()
+{
+	return !unset(std::getenv("NETPLAY_MODE"));
+}
+
+
 bool manager::is_host(running_machine &machine)
 {
 	manager *const m = active();

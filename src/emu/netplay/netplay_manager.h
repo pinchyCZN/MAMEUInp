@@ -71,6 +71,9 @@ public:
 	// notes/netplay-hooks.txt 6.
 	static bool session_active(running_machine &machine);
 
+	// Whether a session is CONFIGURED, which is true before one is open.
+	static bool configured();
+
 	// The frame whose input was just applied, for stamping diagnostics.
 	// False when no session owns this machine, leaving the caller to use
 	// its own clock. Callers run after frame_end, hence m_frame - 1.
