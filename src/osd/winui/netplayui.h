@@ -18,6 +18,7 @@ struct netplay_launch
 	unsigned    batch;
 	bool        savestates;
 	bool        send_config;
+	unsigned    autosave;
 };
 
 // Returns false if cancelled. nGame is the driver index, used for the

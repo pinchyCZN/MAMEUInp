@@ -62,6 +62,7 @@ static void defaults(netplay_launch &c)
 	c.batch = 1;
 	c.savestates = true;
 	c.send_config = true;
+	c.autosave = 0;
 	c.game = -1;
 }
 
@@ -347,6 +348,9 @@ void NetplayApply(const netplay_launch &cfg)
 	put("NETPLAY_BATCH", buf);
 
 	put("NETPLAY_SAVESTATES", cfg.savestates ? "1" : "0");
+
+	std::snprintf(buf, sizeof(buf), "%u", cfg.autosave);
+	put("NETPLAY_SNAPSHOT_SECS", buf);
 	put("NETPLAY_SEND_CONFIG", cfg.send_config ? "1" : "0");
 
 	// Full depth; the ceiling is derived from delay and batch.
@@ -364,7 +368,7 @@ void NetplayClear(void)
 		"NETPLAY_MODE", "NETPLAY_HOST", "NETPLAY_PORT", "NETPLAY_PLAYERS",
 		"NETPLAY_SLOT", "NETPLAY_DELAY", "NETPLAY_BATCH",
 		"NETPLAY_SAVESTATES", "NETPLAY_SEND_CONFIG", "NETPLAY_REDUNDANCY",
-		"NETPLAY_TAG"
+		"NETPLAY_SNAPSHOT_SECS", "NETPLAY_TAG"
 	};
 
 	for (unsigned i = 0; i < ARRAY_LENGTH(vars); i++)
@@ -535,6 +539,8 @@ static unsigned kv(const std::string &s, const char *key, unsigned fallback)
 #define PLAYERS_HI  8
 #define DELAY_LO    1
 #define DELAY_HI    20
+static const unsigned s_autosave_secs[] = { 0, 10, 30, 60, 120, 240 };
+
 #define BATCH_LO    1
 #define BATCH_HI    6
 
@@ -553,6 +559,33 @@ static unsigned combo_get(HWND hDlg, int id, unsigned lo)
 {
 	const LRESULT i = SendDlgItemMessage(hDlg, id, CB_GETCURSEL, 0, 0);
 	return (i == CB_ERR) ? lo : unsigned(lo + unsigned(i));
+}
+
+
+static void autosave_fill(HWND hDlg)
+{
+	SendDlgItemMessage(hDlg, IDC_NPG_AUTOSAVE, CB_RESETCONTENT, 0, 0);
+	for (unsigned i = 0; i < ARRAY_LENGTH(s_autosave_secs); i++)
+	{
+		wchar_t t[16];
+		if (s_autosave_secs[i] == 0)
+			wcscpy(t, L"Off");
+		else
+			_snwprintf(t, 16, L"%u", s_autosave_secs[i]);
+		SendDlgItemMessageW(hDlg, IDC_NPG_AUTOSAVE, CB_ADDSTRING, 0,
+				reinterpret_cast<LPARAM>(t));
+	}
+	SendDlgItemMessage(hDlg, IDC_NPG_AUTOSAVE, CB_SETCURSEL, 0, 0);
+}
+
+
+static unsigned autosave_get(HWND hDlg)
+{
+	const LRESULT i = SendDlgItemMessage(hDlg, IDC_NPG_AUTOSAVE,
+			CB_GETCURSEL, 0, 0);
+	if ((i == CB_ERR) || (i >= LRESULT(ARRAY_LENGTH(s_autosave_secs))))
+		return 0;
+	return s_autosave_secs[i];
 }
 
 
@@ -692,6 +725,13 @@ static void game_enable(HWND hDlg)
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_BATCH), editable);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_SAVESTATES), editable);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_SENDCONFIG), editable);
+
+	// Snapshots are the host's alone (the engine writes them only for
+	// slot 1) and the engine forces the interval to 0 with savestates off,
+	// so the control says the same thing the session would do anyway.
+	const bool saves_on =
+			(IsDlgButtonChecked(hDlg, IDC_NPG_SAVESTATES) == BST_CHECKED);
+	EnableWindow(GetDlgItem(hDlg, IDC_NPG_AUTOSAVE), editable && saves_on);
 }
 
 
@@ -813,6 +853,10 @@ static bool game_launch(HWND hDlg, const std::string &arg)
 	c.batch = kv(arg, "batch", 1);
 	c.savestates = (kv(arg, "savestates", 1) != 0);
 	c.send_config = (kv(arg, "config", 1) != 0);
+
+	// Local to this player and never on the wire: only the host writes
+	// snapshots, so a guest asking for them would get nothing anyway.
+	c.autosave = (c.slot == 1) ? autosave_get(hDlg) : 0;
 
 	// The lobby and the relay are the same machine and port.
 	GetDlgItemTextA(hDlg, IDC_NPL_HOST, c.host, sizeof(c.host));
@@ -1046,6 +1090,7 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 		combo_fill(hDlg, IDC_NPG_PLAYERS, PLAYERS_LO, PLAYERS_HI, s_cfg.players);
 		combo_fill(hDlg, IDC_NPG_DELAY, DELAY_LO, DELAY_HI, s_cfg.delay);
 		combo_fill(hDlg, IDC_NPG_BATCH, BATCH_LO, BATCH_HI, s_cfg.batch);
+		autosave_fill(hDlg);        // Off every time, by design
 		CheckDlgButton(hDlg, IDC_NPG_SAVESTATES,
 				s_cfg.savestates ? BST_CHECKED : BST_UNCHECKED);
 		CheckDlgButton(hDlg, IDC_NPG_SENDCONFIG,
@@ -1133,6 +1178,10 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 
 		case IDC_NPG_JOIN:
 			game_join(hDlg);
+			return true;
+
+		case IDC_NPG_SAVESTATES:
+			game_enable(hDlg);      // the interval hangs off this
 			return true;
 
 		case IDC_NPG_LEAVE:

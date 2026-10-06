@@ -545,6 +545,10 @@
 #define IDC_SEARCH_MACHINE              2360
 #define IDC_SEARCH_MANUF                2361
 #define IDC_SEARCH_DIR                  2362
+// NETPLAY: lobby session settings column
+#define IDC_NPG_AUTOSAVE                2363
+#define IDC_NPG_STATE                   2364
+#define IDC_NPG_VIEWSAVES               2365
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

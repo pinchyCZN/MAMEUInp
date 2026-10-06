@@ -222,6 +222,24 @@ Table of Contents
    The direct connect dialog still accepts the wider ranges it always
    did - it is the expert path and validates rather than constrains.
 
+   The session settings sit in a column right of the Start button:
+   savestates, send-my-settings, the auto-save interval, and the state
+   to start from. The last two are HOST-LOCAL and travel no further
+   than this player's own emulator - only slot 1 writes snapshots, and
+   a guest receives the start state through the existing push rather
+   than loading one. So neither needs a protocol field.
+
+   AUTO-SAVE IS OFF EVERY TIME THE DIALOG OPENS and is not written to
+   netplay.ini. It costs disk for every session it is left on, which
+   makes it the wrong thing to inherit from last time. The choices are
+   10, 30, 60, 120 and 240 seconds; all are at or above the engine
+   floor of 10, so nothing is silently raised. Depth stays at the
+   engine default of 10, round-robin, with no control.
+
+   The interval greys out with savestates unchecked, because the engine
+   forces it to zero in that case anyway - the control only says what
+   the session would do regardless.
+
    The slot each player is given is the roster position, and LAUNCH
    carries it. JOIN then names that slot on the wire - protocol.txt
    4.2.2 - so the relay seats everyone where the lobby said.
