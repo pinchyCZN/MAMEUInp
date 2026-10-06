@@ -38,6 +38,14 @@ static netplay_launch s_cfg;
 static int s_game = -1;
 static int s_selected = -1;    // the main window's selection
 
+static bool s_single_player = false;
+
+// Two, unless the development flag says otherwise.
+static unsigned players_lo(void)
+{
+	return s_single_player ? 1 : 2;
+}
+
 // The hosted game as the server last described it. One game at a time,
 // so one copy of it.
 static bool         s_g_active = false;
@@ -100,6 +108,8 @@ static void load_cfg(netplay_launch &c)
 			c.savestates = (std::atoi(val) != 0);
 		else if (!std::strcmp(key, "sendconfig"))
 			c.send_config = (std::atoi(val) != 0);
+		else if (!std::strcmp(key, "singleplayer"))
+			s_single_player = (std::atoi(val) != 0);
 	}
 	std::fclose(f);
 }
@@ -119,6 +129,9 @@ static void save_cfg(const netplay_launch &c)
 	std::fprintf(f, "batch %u\n", c.batch);
 	std::fprintf(f, "savestates %d\n", c.savestates ? 1 : 0);
 	std::fprintf(f, "sendconfig %d\n", c.send_config ? 1 : 0);
+	if (s_single_player)
+		std::fprintf(f, "singleplayer 1\n");
+
 	std::fclose(f);
 }
 
@@ -227,8 +240,10 @@ static const char *from_dialog(HWND hDlg, netplay_launch &c)
 		return "Enter the server address.";
 	if ((c.port < 1) || (c.port > 65535))
 		return "Port must be 1 to 65535.";
-	if ((c.players < 2) || (c.players > 10))
-		return "Players must be 2 to 10.";
+	if ((c.players < players_lo()) || (c.players > 10))
+		return s_single_player
+				? "Players must be 1 to 10."
+				: "Players must be 2 to 10.";
 	if ((c.slot < 1) || (c.slot > c.players))
 		return "Your player number must be within the player count.";
 	if ((c.delay < 1) || (c.delay > 60))
@@ -592,7 +607,6 @@ static unsigned kv(const std::string &s, const char *key, unsigned fallback)
 
 
 
-#define PLAYERS_LO  2
 #define PLAYERS_HI  8
 #define DELAY_LO    1
 #define DELAY_HI    20
@@ -819,7 +833,7 @@ static void game_show(HWND hDlg)
 
 	SetDlgItemTextA(hDlg, IDC_NPG_DRIVER, s_g_driver.c_str());
 	show_fullname(hDlg, s_g_driver);
-	combo_set(hDlg, IDC_NPG_PLAYERS, PLAYERS_LO, PLAYERS_HI, s_g_players);
+	combo_set(hDlg, IDC_NPG_PLAYERS, players_lo(), PLAYERS_HI, s_g_players);
 	combo_set(hDlg, IDC_NPG_DELAY, DELAY_LO, DELAY_HI, s_g_delay);
 	combo_set(hDlg, IDC_NPG_BATCH, BATCH_LO, BATCH_HI, s_g_batch);
 	CheckDlgButton(hDlg, IDC_NPG_SAVESTATES,
@@ -903,7 +917,7 @@ static void game_host(HWND hDlg)
 	std::snprintf(line, sizeof(line),
 			"CREATE %s players=%u delay=%u batch=%u savestates=%u config=%u",
 			driver,
-			combo_get(hDlg, IDC_NPG_PLAYERS, PLAYERS_LO),
+			combo_get(hDlg, IDC_NPG_PLAYERS, players_lo()),
 			combo_get(hDlg, IDC_NPG_DELAY, DELAY_LO),
 			combo_get(hDlg, IDC_NPG_BATCH, BATCH_LO),
 			(IsDlgButtonChecked(hDlg, IDC_NPG_SAVESTATES) == BST_CHECKED) ? 1u : 0u,
@@ -1199,7 +1213,7 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 
 		roster_init(hDlg);
 		size_player_list(hDlg);
-		combo_fill(hDlg, IDC_NPG_PLAYERS, PLAYERS_LO, PLAYERS_HI, s_cfg.players);
+		combo_fill(hDlg, IDC_NPG_PLAYERS, players_lo(), PLAYERS_HI, s_cfg.players);
 		combo_fill(hDlg, IDC_NPG_DELAY, DELAY_LO, DELAY_HI, s_cfg.delay);
 		combo_fill(hDlg, IDC_NPG_BATCH, BATCH_LO, BATCH_HI, s_cfg.batch);
 		autosave_fill(hDlg);        // Off every time, by design

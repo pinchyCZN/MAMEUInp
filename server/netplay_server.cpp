@@ -769,9 +769,10 @@ void relay::lobby_create(unsigned i, const std::string &arg)
 	const unsigned players = kv(arg, "players", 2);
 	const unsigned delay = kv(arg, "delay", 6);
 	const unsigned batch = kv(arg, "batch", 1);
-	if ((players < 2) || (players > MAX_PLAYERS))
+
+	if ((players < 1) || (players > MAX_PLAYERS))
 	{
-		lobby_send(i, "ERROR players must be 2 to "
+		lobby_send(i, "ERROR players must be 1 to "
 				+ std::to_string(unsigned(MAX_PLAYERS)));
 		return;
 	}
