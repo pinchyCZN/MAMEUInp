@@ -23,6 +23,7 @@ struct netplay_launch
 	// The bare name -state takes, "np01" - not a filename and not a
 	// path. Empty is a cold boot. Not saved, like autosave.
 	char        state[64];
+	bool        netstats;
 };
 
 // Returns false if cancelled. nGame is the driver index, used for the

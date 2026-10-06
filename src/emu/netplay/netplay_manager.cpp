@@ -132,6 +132,9 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_refused_reported(false)
 	, m_chat_n(0)
 	, m_departed(0)
+	, m_stats_on(false)
+	, m_frame_ms(1000.0 / 60.0)
+	, m_wait_n(0)
 	, m_enter_prev(false)
 	, m_enter_edge(false)
 	, m_chat_open(false)
@@ -302,6 +305,26 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	m_test_chat_hold = frame_t(env_uint("NETPLAY_TEST_CHAT_HOLD", 0));
 	m_test_resync_every =
 			frame_t(env_uint("NETPLAY_TEST_RESYNC_EVERY", 0));
+
+	// The readout costs a sample per frame and a little arithmetic per
+	// drawn frame, so it is off unless asked for.
+	const char *const st = std::getenv("NETPLAY_STATS");
+	m_stats_on = !unset(st) && (std::strcmp(st, "0") != 0);
+	std::memset(m_wait_ms, 0, sizeof(m_wait_ms));
+
+	// THE SUGGESTION IS IN FRAMES, SO IT NEEDS THE REAL FRAME PERIOD. One
+	// extra frame of delay buys exactly one frame period of slack, and at
+	// 59.63 Hz assuming 60 would quietly under-advise.
+	{
+		screen_device *const scr =
+				screen_device_iterator(machine.root_device()).first();
+		if (scr != nullptr)
+		{
+			const double hz = scr->frame_period().as_hz();
+			if (hz > 1.0)
+				m_frame_ms = 1000.0 / hz;
+		}
+	}
 
 	machine.add_notifier(MACHINE_NOTIFY_EXIT,
 			machine_notify_delegate(&manager::on_exit, this));
@@ -2075,6 +2098,7 @@ void manager::wait_for_input()
 	if (!gated && !m_net_paused && complete(m_frame))
 	{
 		m_held_polls = 0;
+		note_wait(0);
 		return;
 	}
 
@@ -2260,12 +2284,118 @@ void manager::wait_for_input()
 	if (we_paused)
 		m_machine.resume();
 
+	// The whole hold, however it ended, is this frame's sample.
+	note_wait(unsigned(((osd_ticks() - hold_began) * 1000) / tps));
+
 	if (warned_here && !m_net_paused && complete(m_frame))
 		m_machine.popmessage();  // clear the warning
 
 	m_held_polls = 0;
 }
 
+
+//-------------------------------------------------
+//  note_wait / stats_view
+//-------------------------------------------------
+
+void manager::note_wait(unsigned ms)
+{
+	if (!m_stats_on)
+		return;
+
+	m_wait_ms[m_wait_n % STATS_WINDOW] = u16((ms > 0xffff) ? 0xffff : ms);
+	m_wait_n++;
+}
+
+
+// WHAT THE NUMBERS ARE FOR. A wait is how late the other peer's word was
+// against the budget we gave it, and one more frame of delay buys exactly one
+// frame period. So the advice is arithmetic, not judgement: round the late
+// figure up to whole frames and add it to the delay in use.
+//
+// p95 RATHER THAN THE WORST. One outlier - a scheduler hiccup, a lost packet
+// recovered by retransmission - would otherwise talk the player into several
+// frames they do not need. The worst is shown beside it so a big gap between
+// the two is visible, because that gap means loss rather than latency and
+// more delay will not fix it.
+bool manager::wait_summary(wait_stats &out) const
+{
+	const unsigned n = unsigned((m_wait_n < STATS_WINDOW)
+			? m_wait_n : STATS_WINDOW);
+	if (!m_stats_on || (n == 0))
+		return false;
+
+	// Copied so the window keeps filling while this sorts.
+	u16 sorted[STATS_WINDOW];
+	std::memcpy(sorted, m_wait_ms, sizeof(u16) * n);
+	std::sort(sorted, sorted + n);
+
+	unsigned waited = 0;
+	for (unsigned i = 0; i < n; i++)
+		if (sorted[i] != 0)
+			waited++;
+
+	out.pct = (waited * 100) / n;
+	out.p95 = sorted[(n * 95) / 100];
+	out.worst = sorted[n - 1];
+	out.typ = (waited != 0) ? sorted[n - 1 - (waited / 2)] : 0;
+	out.secs = unsigned((double(n) * m_frame_ms) / 1000.0);
+
+	// ONE MORE FRAME OF DELAY BUYS ONE FRAME PERIOD OF SLACK, so the advice
+	// is arithmetic rather than judgement: round the late figure up to whole
+	// frames and add it to the delay in use.
+	const unsigned add = unsigned((double(out.p95) / m_frame_ms) + 0.999);
+	out.suggest = unsigned(m_delay) + add;
+	return true;
+}
+
+
+// p95 RATHER THAN THE WORST drives the advice. One outlier - a scheduler
+// hiccup, or a lost packet recovered by retransmission - would otherwise talk
+// the player into several frames they do not need. The worst is shown beside
+// it, because a large gap between the two means loss rather than latency and
+// more delay will not fix that.
+unsigned manager::stats_view(running_machine &machine, stats_line *out,
+		unsigned max)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine) || (out == nullptr) || (max == 0))
+		return 0;
+
+	wait_stats w;
+	if (!m->wait_summary(w))
+		return 0;
+
+	unsigned line = 0;
+	std::snprintf(out[line].text, STATS_TEXT,
+			"net  delay %d  batch %d  budget %df %dms",
+			int(m->m_delay), int(m->m_batch),
+			int(m->m_delay) - int(m->m_batch) + 1,
+			int(((m->m_delay - m->m_batch + 1) * m->m_frame_ms) + 0.5));
+	if (++line >= max)
+		return line;
+
+	if (w.pct == 0)
+	{
+		std::snprintf(out[line].text, STATS_TEXT,
+				"     no waits in the last %u s", w.secs);
+		return line + 1;
+	}
+
+	std::snprintf(out[line].text, STATS_TEXT,
+			"     waits %u%%  typ %ums  p95 %ums  max %ums",
+			w.pct, w.typ, w.p95, w.worst);
+	if (++line >= max)
+		return line;
+
+	if (w.suggest <= unsigned(m->m_delay))
+		std::snprintf(out[line].text, STATS_TEXT,
+				"     absorbed - delay %d is holding", int(m->m_delay));
+	else
+		std::snprintf(out[line].text, STATS_TEXT,
+				"     suggest delay %u", w.suggest);
+	return line + 1;
+}
 
 //-------------------------------------------------
 //  say_holding
@@ -2739,6 +2869,17 @@ void manager::write_status()
 	std::fprintf(f, "stall_frames=%llu\n",
 			static_cast<unsigned long long>(m_stall_frames));
 	std::fprintf(f, "waits=%llu\n", static_cast<unsigned long long>(m_waits));
+
+	wait_stats w;
+	if (wait_summary(w))
+	{
+		std::fprintf(f, "wait_pct=%u\n", w.pct);
+		std::fprintf(f, "wait_typ=%u\n", w.typ);
+		std::fprintf(f, "wait_p95=%u\n", w.p95);
+		std::fprintf(f, "wait_max=%u\n", w.worst);
+		std::fprintf(f, "wait_secs=%u\n", w.secs);
+		std::fprintf(f, "suggest_delay=%u\n", w.suggest);
+	}
 	std::fprintf(f, "malformed=%llu\n",
 			static_cast<unsigned long long>(m_malformed));
 

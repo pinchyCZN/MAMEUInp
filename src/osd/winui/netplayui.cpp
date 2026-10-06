@@ -73,6 +73,7 @@ static void defaults(netplay_launch &c)
 	c.send_config = true;
 	c.autosave = 0;
 	c.state[0] = 0;
+	c.netstats = false;
 	c.game = -1;
 }
 
@@ -110,6 +111,8 @@ static void load_cfg(netplay_launch &c)
 			c.send_config = (std::atoi(val) != 0);
 		else if (!std::strcmp(key, "singleplayer"))
 			s_single_player = (std::atoi(val) != 0);
+		else if (!std::strcmp(key, "netstats"))
+			c.netstats = (std::atoi(val) != 0);
 	}
 	std::fclose(f);
 }
@@ -129,6 +132,7 @@ static void save_cfg(const netplay_launch &c)
 	std::fprintf(f, "batch %u\n", c.batch);
 	std::fprintf(f, "savestates %d\n", c.savestates ? 1 : 0);
 	std::fprintf(f, "sendconfig %d\n", c.send_config ? 1 : 0);
+	std::fprintf(f, "netstats %d\n", c.netstats ? 1 : 0);
 	if (s_single_player)
 		std::fprintf(f, "singleplayer 1\n");
 
@@ -369,6 +373,7 @@ void NetplayApply(const netplay_launch &cfg)
 	std::snprintf(buf, sizeof(buf), "%u", cfg.autosave);
 	put("NETPLAY_SNAPSHOT_SECS", buf);
 	put("NETPLAY_SEND_CONFIG", cfg.send_config ? "1" : "0");
+	put("NETPLAY_STATS", cfg.netstats ? "1" : "0");
 
 	// Full depth; the ceiling is derived from delay and batch.
 	put("NETPLAY_REDUNDANCY", "99");
@@ -385,7 +390,7 @@ void NetplayClear(void)
 		"NETPLAY_MODE", "NETPLAY_HOST", "NETPLAY_PORT", "NETPLAY_PLAYERS",
 		"NETPLAY_SLOT", "NETPLAY_DELAY", "NETPLAY_BATCH",
 		"NETPLAY_SAVESTATES", "NETPLAY_SEND_CONFIG", "NETPLAY_REDUNDANCY",
-		"NETPLAY_SNAPSHOT_SECS", "NETPLAY_TAG"
+		"NETPLAY_SNAPSHOT_SECS", "NETPLAY_STATS", "NETPLAY_TAG"
 	};
 
 	for (unsigned i = 0; i < ARRAY_LENGTH(vars); i++)
@@ -975,6 +980,8 @@ static bool game_launch(HWND hDlg, const std::string &arg)
 	if (c.slot == 1)
 		GetDlgItemTextA(hDlg, IDC_NPG_STATE, c.state, sizeof(c.state));
 
+	c.netstats = (IsDlgButtonChecked(hDlg, IDC_NPL_NETSTATS) == BST_CHECKED);
+
 	// The lobby and the relay are the same machine and port.
 	GetDlgItemTextA(hDlg, IDC_NPL_HOST, c.host, sizeof(c.host));
 	c.port = GetDlgItemInt(hDlg, IDC_NPL_PORT, nullptr, false);
@@ -1221,6 +1228,8 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 				s_cfg.savestates ? BST_CHECKED : BST_UNCHECKED);
 		CheckDlgButton(hDlg, IDC_NPG_SENDCONFIG,
 				s_cfg.send_config ? BST_CHECKED : BST_UNCHECKED);
+		CheckDlgButton(hDlg, IDC_NPL_NETSTATS,
+				s_cfg.netstats ? BST_CHECKED : BST_UNCHECKED);
 
 		// Seed the system from the main window selection, so the common
 		// case is Connect then Host game.

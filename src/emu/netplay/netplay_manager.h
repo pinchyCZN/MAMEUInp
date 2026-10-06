@@ -43,7 +43,6 @@
 #include <memory>
 #include <string>
 
-
 namespace netplay {
 
 class manager
@@ -130,6 +129,19 @@ public:
 	// Lines held, and how long one stays up. Six lines is what fits the
 	// corner without covering the playfield.
 	static constexpr unsigned CHAT_LINES = 6;
+
+	// The connection readout. Five seconds at 60 Hz: long enough that a
+	// single hiccup does not dominate, short enough to answer "is it
+	// better now" while somebody is changing the delay.
+	static constexpr unsigned STATS_WINDOW = 300;
+	static constexpr unsigned STATS_LINES = 3;
+	static constexpr unsigned STATS_TEXT = 96;
+
+	struct stats_line
+	{
+		char text[STATS_TEXT];
+	};
+
 	static constexpr unsigned CHAT_SECONDS = 12;
 	static constexpr unsigned CHAT_FADE_SECONDS = 2;
 
@@ -155,6 +167,11 @@ public:
 	// paused. The input hook does not: it stops with the scheduler, so a
 	// key pressed while a menu is up would still look new afterwards.
 	static void sample_ui_keys(running_machine &machine);
+
+	// Fills out with the readout and returns how many lines it wrote, 0
+	// when it is switched off. Nothing is measured in that case either.
+	static unsigned stats_view(running_machine &machine, stats_line *out,
+			unsigned max);
 
 	// True only on the frame Enter went down. Replaces
 	// input_manager::code_pressed_once for the chat keys - see the
@@ -302,6 +319,20 @@ private:
 	void send_bye();
 	void take_bye(player_t from, u8 reason);
 	void say_holding(unsigned secs);
+	void note_wait(unsigned ms);
+
+	// The window reduced to the five figures worth reporting. False when
+	// there is nothing to report yet.
+	struct wait_stats
+	{
+		unsigned pct;       // frames that had to wait, percent
+		unsigned typ;       // median of the waits themselves
+		unsigned p95;       // 95th percentile over every frame
+		unsigned worst;
+		unsigned secs;      // how much play the window covers
+		unsigned suggest;   // delay that would have absorbed p95
+	};
+	bool wait_summary(wait_stats &out) const;
 	void do_capture();
 	void test_corrupt();
 
@@ -461,6 +492,14 @@ private:
 	// this so a wait on somebody who quit does not blame the network.
 	u8                          m_departed;
 
+	// How long each recent frame had to wait for input, in milliseconds.
+	// A frame that did not wait records a zero, so the window is a rate
+	// as well as a distribution.
+	bool                        m_stats_on;
+	double                      m_frame_ms;
+	u16                         m_wait_ms[STATS_WINDOW];
+	u64                         m_wait_n;
+
 	bool                        m_enter_prev;
 	bool                        m_enter_edge;
 
@@ -478,7 +517,6 @@ private:
 
 	void chat_push(player_t from, const char *text);
 	void chat_send();
-
 
 	// Replaying already-known input to close the gap. Capture and publish
 	// are suppressed while this is set: those frames were captured and

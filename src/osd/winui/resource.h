@@ -554,6 +554,7 @@
 #define IDC_NPS_LIST                    2371
 #define IDC_NPS_PREVIEW                 2372
 #define IDC_NPS_PATH                    2373
+#define IDC_NPL_NETSTATS                2374
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

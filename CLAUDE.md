@@ -264,6 +264,64 @@ bound by rules 5 through 8.
 Upstream's `.gitignore` already covers `build/`. ROM images are copyrighted and
 are not ours to redistribute.
 
+### 11. Never run MAME from the repo root
+
+MAME writes its configuration and its output beside wherever it is started.
+Run it from the root and it scatters `cfg/`, `nvram/`, `sta/`, `snap/`,
+`folders/`, `history/`, `MAMEUI.ini`, `ui.ini`, `MAME_g.ini` and a per-game
+`.ini` across a tree of 30,000 files you are trying to keep legible. It also
+overwrites `netplay.ini`, which holds the address of the server the user is
+testing against.
+
+Two working directories, and neither is the root:
+
+| Who | Where | Contains |
+|---|---|---|
+| the user | `run/` | their own GUI testing - **off limits** |
+| an agent | `run/agent/` | its own everything - wipe freely |
+
+**An agent runs MAME with the working directory at `run/agent/`.** Every
+config file MAME and MAMEUI touch - `netplay.ini`, `netplaypick.ini`,
+`MAMEUI.ini`, `ini/ui.ini`, the per-game inis - resolves against the working
+directory, so moving it is the whole isolation mechanism. No code change and
+no command-line options are needed.
+
+#### 11.1. The sandbox needs two seeded files, and they must use
+absolute read paths
+
+`run/agent/mame.ini` serves a direct emulator launch; `run/agent/ini/mame.ini`
+serves a GUI launch, because MAMEUI takes its directories from its own ini and
+forces them at `OPTION_PRIORITY_CMDLINE` (`mui_opts.cpp` `SetDirectories`), so
+the command line cannot override them. Both are data, not code - recreate them
+if they are missing.
+
+THE READ PATHS MUST BE ABSOLUTE. `hashpath`, `pluginspath`, `artpath`,
+`languagepath`, `samplepath`, `ctrlrpath`, `cheatpath` and `rompath` default to
+bare names that resolve against the working directory. Left relative they point
+at `run/agent/hash`, `run/agent/plugins` and so on, which do not exist - and
+nothing says so. The symptom is a driver that exits during startup with no
+diagnostic.
+
+Writable paths stay relative, so everything lands inside the sandbox.
+
+#### 11.2. The user's files are not ours to touch
+
+Never read, write, move or delete `run/` (except `run/agent/`), `ini/`,
+`roms/`, `netplay.ini` or `MAMEUI.ini`. They hold server addresses, ROM paths,
+input remaps and save data that no rebuild reproduces.
+
+**Never delete configuration to tidy up.** Say what is stale and ask. A
+missing `ini/mame.ini` costs the user their ROM path, and nothing in the UI
+explains why every audit suddenly fails.
+
+`rm -rf run/agent` is always safe and is the reset.
+
+#### 11.3. What the sandbox does not isolate
+
+The binary. An agent rebuilding to test its own change rebuilds the exe the
+user runs. Close any running instance first - the link fails with LNK1104 and
+leaves the PREVIOUS exe in place, so the next run silently tests old code.
+
 ---
 
 ## Repository layout
@@ -308,6 +366,8 @@ MAMEUI/                        upstream Robbbert/mameui @ tag210, branch netplay
   projects/                    MAME's out-of-tree slot - gitignored, unused
   build/                       generated projects and objects   [not committed]
   roms/                        ROM images                       [not committed]
+  run/                         the user's working directory - rule 11
+  run/agent/                   an agent's sandbox - rule 11, wipe freely
 ```
 
 Three things worth knowing about that layout:

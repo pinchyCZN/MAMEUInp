@@ -444,12 +444,27 @@ void mame_ui_manager::update_and_render(render_container &container)
 				netplay::manager::CHAT_LINES);
 		char const *const prompt = netplay::manager::chat_prompt(machine());
 
-		if ((rows != 0) || (prompt != nullptr))
+		// NETPLAY: the connection readout shares this corner, stacked above
+		// the chat so the two never overlap however many lines each has.
+		netplay::manager::stats_line stats[netplay::manager::STATS_LINES];
+		unsigned const srows = netplay::manager::stats_view(machine(), stats,
+				netplay::manager::STATS_LINES);
+
+		if ((rows != 0) || (prompt != nullptr) || (srows != 0))
 		{
 			float const lh = get_line_height();
 			float const x = 0.01f;
-			unsigned const total = rows + ((prompt != nullptr) ? 1 : 0);
+			unsigned const total = rows + ((prompt != nullptr) ? 1 : 0) + srows;
 			float y = 1.0f - (lh * float(total)) - 0.004f;
+
+			for (unsigned i = 0; i < srows; i++)
+			{
+				draw_text_full(container, stats[i].text, x, y, 1.0f - (x * 2.0f),
+						ui::text_layout::LEFT, ui::text_layout::NEVER, OPAQUE_,
+						rgb_t(0xff, 0x90, 0xff, 0x90), rgb_t(0xa0, 0x00, 0x00, 0x00),
+						nullptr, nullptr);
+				y += lh;
+			}
 
 			for (unsigned i = 0; i < rows; i++)
 			{

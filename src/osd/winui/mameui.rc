@@ -1191,6 +1191,8 @@ BEGIN
                     ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL
 
     PUSHBUTTON      "&Direct connect...",IDC_NPL_DIRECT,8,306,74,16
+    CONTROL         "Show connection &stats in game",IDC_NPL_NETSTATS,
+                    "Button",BS_AUTOCHECKBOX | WS_TABSTOP,92,311,118,10
     PUSHBUTTON      "Close",IDCANCEL,338,306,54,16
 END
 
