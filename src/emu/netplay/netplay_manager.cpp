@@ -82,8 +82,8 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_config_done(false)
 	, m_config_checked(false)
 	, m_need(0)
-	, m_pending(0)
-	, m_echo(0)
+	, m_pending()
+	, m_echo()
 	, m_local_mask(0)
 	, m_out_base(0)
 	, m_out_n(0)
@@ -154,6 +154,8 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 {
 	std::memset(m_ring, 0, sizeof(m_ring));
 	std::memset(m_out, 0, sizeof(m_out));
+	word_clear(m_pending);
+	word_clear(m_echo);
 	m_missing[0] = 0;
 
 	for (player_t p = 1; p <= m_players; p++)
@@ -167,13 +169,22 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	// Frames 0 .. delay-1 would have been published by frames -delay .. -1,
 	// which never ran. Neutral is nothing pressed, which is what the machine
 	// would see from a player who has not touched a control yet.
+	//
+	// AN AXIS HAS NO NEUTRAL, and a zeroed word is not its default. A
+	// lightgun defaults to centre - 0x80 on opwolf - so for the first
+	// `delay` frames every gun is forced to its minimum instead, and the
+	// crosshair starts at the edge before snapping to centre. Deterministic
+	// on both peers, so it cannot desync; it is 4 frames of the machine's
+	// own reset at delay 4. Priming the axes with their defaults instead
+	// needs the translation table, which setup() builds after this runs.
+	// [open]
 	for (frame_t f = 0; f < frame_t(m_delay); f++)
 	{
 		slot &s = at(f);
 		s.stamp = f;
 		s.have = m_need;
 		for (player_t p = 0; p < MAX_PLAYERS; p++)
-			s.words[p] = 0;
+			word_clear(s.words[p]);
 	}
 
 	// Those primed frames are published, as far as the stream is
@@ -212,9 +223,10 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	if (m_depth < 1)
 		m_depth = 1;
 
-	osd_printf_info("netplay: redundancy depth %u (asked %u, ceiling %u), %u byte input packets\n",
-			m_depth, want, ceiling,
-			unsigned(HEADER_BYTES + (m_depth * m_batch * sizeof(input_word))));
+	// THE BYTE SIZE IS NOT KNOWN HERE. The word is driver-derived and the
+	// translation table is built in setup(), which reports it.
+	osd_printf_info("netplay: redundancy depth %u (asked %u, ceiling %u), %u words per packet\n",
+			m_depth, want, ceiling, m_depth * m_batch);
 
 	for (unsigned i = 0; i < CHAT_LINES; i++)
 	{
@@ -350,8 +362,15 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 		osd_printf_info("netplay: %s refused - %s\n",
 				m_machine.system().name,
 				(m_map.unowned() != 0)
-						? "digital fields with no owner in the table"
-						: "the driver needs more digital bits than the word carries");
+						? "fields with no owner in the table"
+						: "the driver does not fit the word");
+
+		// WHICH FIELDS, because "refused" on its own sends you to the
+		// source. An unowned ANALOG field is the common case now: its
+		// value reaches the driver whatever we do, so one we cannot route
+		// would desync silently rather than be dropped.
+		if (m_map.unowned() != 0)
+			osd_printf_info("%s", m_map.describe().c_str());
 		return false;
 	}
 
@@ -409,6 +428,14 @@ bool manager::setup(const char *logpath, std::unique_ptr<transport> link)
 			int(RESYNC_MAX_BYTES / 1024),
 			(state_blob::machine_state_size(m_machine) <= RESYNC_MAX_BYTES)
 					? "resync possible" : "RESYNC WILL BE REFUSED");
+
+	{
+		const word_layout &lay = m_map.layout();
+		osd_printf_info("netplay: word %d bytes - digital %d, %d axis(es); %u byte input packets\n",
+				int(lay.bytes), int(lay.digital_bytes), int(lay.axes),
+				unsigned(input_bytes(m_depth * m_batch, slot_bit(m_local),
+						false, lay.bytes)));
+	}
 
 	osd_printf_info("netplay: %s players=%d local=%d delay=%d batch=%d budget=%d bits=%d digest=%016llx config=%016llx\n",
 			m_link->name(), int(m_players), int(m_local), int(m_delay),
@@ -566,7 +593,7 @@ void manager::touch(frame_t frame)
 	s.stamp = frame;
 	s.have = 0;
 	for (player_t p = 0; p < MAX_PLAYERS; p++)
-		s.words[p] = 0;
+		word_clear(s.words[p]);
 }
 
 
@@ -577,7 +604,7 @@ bool manager::complete(frame_t frame)
 }
 
 
-void manager::publish(frame_t frame, player_t player, input_word word)
+void manager::publish(frame_t frame, player_t player, const input_word &word)
 {
 	if ((player < 1) || (player > MAX_PLAYERS))
 		return;
@@ -600,7 +627,7 @@ void manager::publish(frame_t frame, player_t player, input_word word)
 //  outgoing batch
 //-------------------------------------------------
 
-void manager::batch_add(input_word word, frame_t frame)
+void manager::batch_add(const input_word &word, frame_t frame)
 {
 	if (m_out_n == 0)
 		m_out_base = frame;
@@ -612,7 +639,7 @@ void manager::batch_add(input_word word, frame_t frame)
 }
 
 
-void manager::publish_up_to(frame_t through, input_word word)
+void manager::publish_up_to(frame_t through, const input_word &word)
 {
 	if (m_published >= through)
 		return;
@@ -643,8 +670,16 @@ unsigned manager::send_window(frame_t newest, unsigned span, unsigned fresh)
 
 	if (span > (REDUNDANCY_MAX * MAX_BATCH))
 		span = REDUNDANCY_MAX * MAX_BATCH;
-	if (span > MAX_PACKET_WORDS)
-		span = MAX_PACKET_WORDS;
+
+	// AND BY THE DATAGRAM. This clamp was unreachable while the word was
+	// a fixed 8 bytes - 148 words fit, and a window is at most 128 - but
+	// the word is driver-derived now and a wide one brings the two
+	// figures together. Reaching it still needs a delay in the seventies.
+	const unsigned fit = max_words_for(m_map.layout().bytes);
+	if (span > fit)
+		span = fit;
+	if (span == 0)
+		return 0;
 
 	// THE WORDS ARE ALREADY IN THE RING. Our own word for every frame we
 	// published is sitting at at(f).words[m_local - 1], and the ring holds
@@ -689,7 +724,8 @@ unsigned manager::send_window(frame_t newest, unsigned span, unsigned fresh)
 	head.reserved = 0;
 
 	u8 buf[MAX_DATAGRAM];
-	const size_t len = build_input(buf, sizeof(buf), head, words, nullptr);
+	const size_t len = build_input(buf, sizeof(buf), head, words, nullptr,
+			m_map.layout().bytes);
 	if (len == 0)
 		return 0;
 
@@ -852,7 +888,8 @@ void manager::poll_link()
 		}
 
 		if (!parse_input(buf, len, head, words,
-				sizeof(words) / sizeof(words[0]), hash, has_hash))
+				sizeof(words) / sizeof(words[0]), hash, has_hash,
+				m_map.layout().bytes))
 		{
 			m_malformed++;
 			continue;
@@ -1399,8 +1436,8 @@ void manager::apply_resync()
 
 	const frame_t was = m_frame;
 	m_frame = from;
-	m_pending = 0;
-	m_echo = 0;
+	word_clear(m_pending);
+	word_clear(m_echo);
 	m_resync_wanted = false;
 	m_blob.clear();
 
@@ -1425,8 +1462,10 @@ void manager::apply_resync()
 		if (m_published < m_frame)
 		{
 			const slot &last = at(m_published);
-			const input_word w = (last.stamp == m_published)
-					? last.words[m_local - 1] : input_word(0);
+			input_word w;
+			word_clear(w);
+			if (last.stamp == m_published)
+				w = last.words[m_local - 1];
 			publish_up_to(m_frame, w);
 			batch_flush();      // not inside frame_end, so send it now
 		}
@@ -2539,8 +2578,15 @@ void manager::check_selftest()
 {
 	// Only the bits LOCAL_SLOT owns: capture_port reads that slot's fields
 	// and no other, so nothing else is expected to echo back.
-	const u32 want = word_digital(at(m_frame).words[inputmap::LOCAL_SLOT - 1]) & m_local_mask;
-	const u32 got = word_digital(m_echo) & m_local_mask;
+	// DIGITAL ONLY. An axis does not echo: capture reads
+	// analog_field::netplay_value() and inject writes a forced value that
+	// read() returns without touching the accumulator, so the captured
+	// and injected numbers are equal by construction and comparing them
+	// would test nothing.
+	const word_layout &lay = m_map.layout();
+	const u32 want = word_digital(at(m_frame).words[inputmap::LOCAL_SLOT - 1],
+			lay) & m_local_mask;
+	const u32 got = word_digital(m_echo, lay) & m_local_mask;
 
 	if (want != got)
 	{
@@ -2687,12 +2733,15 @@ void manager::frame_end(running_machine &machine)
 		m->check_selftest();
 
 	if (m->m_log != nullptr)
-		std::fprintf(m->m_log, "%u,%016llx,%016llx,%02x\n",
-				unsigned(m->m_frame),
-				static_cast<unsigned long long>(m->m_pending),
-				static_cast<unsigned long long>(
-						m->at(m->m_frame).words[m->m_local - 1]),
+	{
+		char cap[WORD_HEX_CHARS], inj[WORD_HEX_CHARS];
+		word_hex(m->m_pending, m->m_map.layout(), cap, WORD_HEX_CHARS);
+		word_hex(m->at(m->m_frame).words[m->m_local - 1],
+				m->m_map.layout(), inj, WORD_HEX_CHARS);
+		std::fprintf(m->m_log, "%u,%s,%s,%02x\n",
+				unsigned(m->m_frame), cap, inj,
 				m->at(m->m_frame).have);
+	}
 
 	if (m->m_replaying && (m->m_frame >= m->m_replay_until))
 	{
@@ -2730,8 +2779,8 @@ void manager::frame_end(running_machine &machine)
 		m->m_link->tick();
 	m->poll_link();
 
-	m->m_pending = 0;
-	m->m_echo = 0;
+	word_clear(m->m_pending);
+	word_clear(m->m_echo);
 	m->m_frame++;
 
 	// ~2 Hz while running. Often enough to watch, cheap enough to ignore.

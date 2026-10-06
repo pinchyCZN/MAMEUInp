@@ -236,6 +236,19 @@ Table of Contents
    entries - so a load leaves whatever input was held at the moment of
    the load still held. [verified]
 
+   NOR ANY ANALOG STATE. ioport.cpp calls save_item and save_pointer
+   nowhere at all, so analog_field's m_accum, m_previous and
+   m_previousanalog are in no savestate either. [verified]
+
+   That is why an axis is injected every frame rather than restored:
+   the value a peer is told travels in the word for every frame
+   (protocol.txt 1.6.1), so a resync needs to carry nothing analog and
+   the frame after a load is authoritative on its own. Had the format
+   sent per-frame DELTAS and accumulated them locally, this absence
+   would be a permanent divergence after every resync - the position
+   would never be re-established. It is one of the reasons the wire
+   carries the absolute post-mask value.
+
    The consequence is a two-frame divergence that looks exactly like an
    imperfect savestate and is not one. With the wrong buttons held, the
    frame after the load writes them into work RAM and the game acts on

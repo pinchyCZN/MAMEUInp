@@ -31,7 +31,11 @@
 
 namespace netplay {
 
-constexpr u8 PROTOCOL_VERSION = 1;
+// 2: the input word became driver-derived and carries analog axes.
+// Version 1 peers pack a fixed 8-byte word whose high 32 bits are unused,
+// so a 1-against-2 session would agree on every digest and then read each
+// other's axes as digital bits. notes/protocol.txt 1.6.1
+constexpr u8 PROTOCOL_VERSION = 2;
 
 // 3.2
 constexpr unsigned HEADER_BYTES = 12;
@@ -142,18 +146,21 @@ inline unsigned popcount8(u8 v)
 
 // Returns bytes written, or 0 if the arguments do not fit. `words` is
 // frame-major: nframes blocks, each holding one word per set bit of
-// player_mask in ascending slot order.
+// player_mask in ascending slot order. Only word_bytes of each word is
+// written; the rest of the in-memory word is padding this never sends.
 size_t build_input(u8 *buf, size_t cap, const packet_header &head,
-		const input_word *words, const u64 *hash);
+		const input_word *words, const u64 *hash, unsigned word_bytes);
 
 // Validates length, version and type against the declared shape. Returns
 // false rather than reading past the end on anything malformed.
 bool parse_header(const u8 *buf, size_t len, packet_header &head);
 
 // Fills `words` with nframes x popcount(player_mask) entries. `max_words` is
-// the capacity of that array.
+// the capacity of that array. Each parsed word is zero-padded above
+// word_bytes, so an in-memory word compares equal across peers.
 bool parse_input(const u8 *buf, size_t len, packet_header &head,
-		input_word *words, unsigned max_words, u64 &hash, bool &has_hash);
+		input_word *words, unsigned max_words, u64 &hash, bool &has_hash,
+		unsigned word_bytes);
 
 // ---- control packets ----
 //
@@ -409,11 +416,26 @@ constexpr size_t STALL_BYTES = HEADER_BYTES + 4;
 constexpr size_t NAK_BYTES = HEADER_BYTES + 4;
 
 
-// The most words any one datagram can carry, derived rather than picked:
-// a receiver sized by this cannot be overrun by a legal packet, and a
-// sender that respects it cannot build an illegal one.
-constexpr unsigned MAX_PACKET_WORDS =
-		unsigned((MAX_DATAGRAM - HEADER_BYTES) / sizeof(input_word));
+// The most words a sender ever builds into one datagram: one redundancy
+// window, REDUNDANCY_MAX * MAX_BATCH. Stated here rather than derived
+// because this header must not depend on the manager; netplay_manager.h
+// static_asserts the two agree.
+//
+// NO LONGER DERIVED FROM THE DATAGRAM SIZE, because the word size is now a
+// property of the session rather than a constant. A receive array sized by
+// this cannot be overrun, because parse_input rejects a packet declaring
+// more words than the caller's capacity.
+constexpr unsigned MAX_PACKET_WORDS = 128;
+
+
+// How many words of this width fit one datagram. The sender must clamp its
+// redundancy window to this or build_input refuses the packet.
+inline unsigned max_words_for(unsigned word_bytes)
+{
+	if (word_bytes == 0)
+		return 0;
+	return unsigned((MAX_DATAGRAM - HEADER_BYTES) / word_bytes);
+}
 constexpr size_t RESYNC_HEAD_BYTES = HEADER_BYTES + 12;
 
 size_t build_resync_req(u8 *buf, size_t cap, u16 session,
@@ -425,11 +447,14 @@ size_t build_resync(u8 *buf, size_t cap, u16 session, frame_t state_frame,
 bool parse_resync(const u8 *buf, size_t len, frame_t &state_frame,
 		resync_payload &p, const u8 *&chunk, size_t &chunk_len);
 
-// Bytes an INPUT packet of this shape occupies.
-inline size_t input_bytes(unsigned nframes, u8 player_mask, bool hash)
+// Bytes an INPUT packet of this shape occupies. word_bytes is the
+// session's word_layout::bytes - both peers derive it from the driver, so
+// it is common knowledge and travels on no wire.
+inline size_t input_bytes(unsigned nframes, u8 player_mask, bool hash,
+		unsigned word_bytes)
 {
 	return HEADER_BYTES
-			+ (size_t(nframes) * popcount8(player_mask) * sizeof(input_word))
+			+ (size_t(nframes) * popcount8(player_mask) * word_bytes)
 			+ (hash ? sizeof(u64) : 0);
 }
 

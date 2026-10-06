@@ -217,6 +217,11 @@ private:
 	// first anyway.
 	static constexpr unsigned REDUNDANCY_MAX = 16;
 
+	// MAX_PACKET_WORDS sizes the receive array, so it has to cover the
+	// deepest window a sender can build.
+	static_assert((REDUNDANCY_MAX * MAX_BATCH) <= MAX_PACKET_WORDS,
+			"a redundancy window can exceed one datagram's word count");
+
 	// Retransmission request cadence, in hold-loop polls. transport::wait
 	// is about a millisecond, so these are roughly milliseconds.
 	//
@@ -271,8 +276,8 @@ private:
 	void touch(frame_t frame);
 	bool complete(frame_t frame);
 
-	void publish(frame_t frame, player_t player, input_word word);
-	void batch_add(input_word word, frame_t frame);
+	void publish(frame_t frame, player_t player, const input_word &word);
+	void batch_add(const input_word &word, frame_t frame);
 	void batch_flush();
 
 	// Sends one INPUT datagram holding the contiguous run of OUR OWN
@@ -286,7 +291,7 @@ private:
 	// including `through`, repeating `word` across any gap. THE one rule
 	// for what goes on the wire - see the comment at the frame_end call
 	// site for why a second mechanism must not exist.
-	void publish_up_to(frame_t through, input_word word);
+	void publish_up_to(frame_t through, const input_word &word);
 
 	// Ask the peers for the words this peer is missing, and answer such a
 	// request from another peer. notes/protocol.txt 1.7.4

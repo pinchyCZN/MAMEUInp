@@ -3265,6 +3265,9 @@ analog_field::analog_field(ioport_field &field)
 		m_accum(0),
 		m_previous(0),
 		m_previousanalog(0),
+		// NETPLAY: inert until a session forces it. src/emu/netplay/
+		m_netplay_forced(false),
+		m_netplay_value(0),
 		m_minimum(INPUT_ABSOLUTE_MIN),
 		m_maximum(INPUT_ABSOLUTE_MAX),
 		m_center(0),
@@ -3684,6 +3687,17 @@ void analog_field::read(ioport_value &result)
 	// apply standard analog settings
 	value = apply_settings(value);
 
+	// NETPLAY: a session-controlled axis takes the value every peer agreed
+	// on. Replaces the result of apply_settings rather than m_accum, so the
+	// wire carries the game-visible number and no peer has to agree about
+	// sensitivity, reverse or scaling. The interpolation above is
+	// deliberately discarded with it: the agreed value is per frame, and
+	// interpolating towards a local accumulator would reintroduce exactly
+	// the local state this removes. No-ops unless a session is running.
+	// See src/emu/netplay/netplay_inputmap.h.
+	if (m_netplay_forced)
+		value = m_netplay_value;
+
 	// remap the value if needed
 	if (m_field.remap_table() != nullptr)
 		value = m_field.remap_table()[value];
@@ -3704,7 +3718,13 @@ void analog_field::read(ioport_value &result)
 
 float analog_field::crosshair_read()
 {
-	s32 rawvalue = apply_settings(m_accum) & (m_field.mask() >> m_shift);
+	// NETPLAY: the same source read() uses, so a remote player's crosshair
+	// follows their networked axis instead of sitting still while this
+	// machine's gun moves the local one. No-ops unless a session is
+	// running. See src/emu/netplay/netplay_inputmap.h.
+	s32 rawvalue = m_netplay_forced
+			? (m_netplay_value & (m_field.mask() >> m_shift))
+			: (apply_settings(m_accum) & (m_field.mask() >> m_shift));
 	return float(rawvalue - m_adjmin) / float(m_adjmax - m_adjmin);
 }
 

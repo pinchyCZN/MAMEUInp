@@ -18,11 +18,26 @@
     routing them by player() sends every player's start to player 1.
     netplay-hooks.txt 1.4.
 
-    DIGITAL ONLY. Analog injection needs analog_field's m_accum, which is
-    private with ioport_manager as its only relevant friend, so it needs an
-    upstream edit this does not yet make. Analog axes are counted and
-    reported so a driver that needs them is visible, and the word already
-    reserves four of them. [open] See netplay_types.h.
+    DIGITAL AND ANALOG. A digital field is one bit of the word's bitmap; an
+    analog field is a byte-aligned slot carrying its POST-MASK value, the
+    number analog_field::read() inserts into the port. Injection goes
+    through analog_field::netplay_force rather than m_accum, so no peer has
+    to agree about sensitivity, reverse or scaling, and a wrapping axis -
+    whose m_accum has no bound at all - is carried in a fixed width.
+    notes/protocol.txt 1.6.1.
+
+    ONE LAYOUT FOR EVERY PLAYER, sized by the widest. Players do not have
+    to be symmetric: aceattac gives player 1 a positional and a trackball
+    and player 2 a stick, a positional and a pedal. protocol.txt 3.5 wants
+    frame N player P at a fixed offset, so the word is the union of every
+    player's axes and a player short of the maximum leaves its tail zero.
+
+    [open] Analog sensitivity, delta, centerdelta and reverse are still
+    collected and pinned by the config layer below. That is now
+    conservative rather than required: the wire carries the post-mask
+    value, so two peers set differently no longer diverge, they only feel
+    different. Dropping them from the digest would remove a refusal reason
+    at the cost of a session where one player's gun is twitchier.
 
 ***************************************************************************/
 
@@ -101,6 +116,11 @@ public:
 	unsigned analog_seen() const { return m_analog_seen; }
 	unsigned unowned() const { return unsigned(m_unowned.size()); }
 
+	// The word's shape for this session. Both peers derive it from the
+	// driver and the handshake digest proves they agree, so nothing on the
+	// wire carries it. Meaningless until build() has returned true.
+	const word_layout &layout() const { return m_layout; }
+
 	// digital bits LOCAL_SLOT owns; the self-check compares only these
 	// because capture_port reads that slot's fields and no other
 	u32 local_bit_mask() const;
@@ -128,11 +148,30 @@ private:
 		u8              bit;            // digital bit in the word
 	};
 
+	// One analog axis. Located in the word by its owner's slot and its
+	// position in that owner's canonical axis order - POSITIONAL rather
+	// than keyed by ioport_type, because a player can hold two fields of
+	// the same type under opposing PORT_CONDITIONs (coco3's two lightgun
+	// X axes) and a type key would collide. The walk order is the port
+	// tag order of an ordered map, so both peers assign the same indices.
+	struct axis
+	{
+		analog_field *  an;         // ioport_field::live() hands this over
+		                            // non-const from a const field, and it
+		                            // lives as long as the machine does
+		ioport_value    mask;
+		u8              shift;      // trailing zeros of mask
+		u8              bits;       // set bits of mask: the wire width
+		player_t        player;     // 1-based
+		u8              index;      // 0-based, within this player
+	};
+
 	struct port_entry
 	{
 		ioport_port *       port;
 		std::string         tag;
 		std::vector<owned>  fields;
+		std::vector<axis>   axes;
 		ioport_value        shared_mask;    // non-toggle digital, no player
 	};
 
@@ -142,6 +181,7 @@ private:
 	std::unordered_map<const ioport_port *, u32>    m_index;
 	std::vector<u32>                                m_logical;  // bit -> logical id
 	std::vector<std::string>                        m_unowned;
+	word_layout                                     m_layout;
 	u64                                             m_digest;
 	u64                                             m_config_digest;
 	player_t                                        m_players;

@@ -287,13 +287,13 @@ Table of Contents
    point (netplay-hooks.txt 1.5) are all unaffected by which tier is in
    use. [inferred]
 
-1.6.1.  The hot-path word is 8 bytes
+1.6.1.  The hot-path word is derived from the driver
 
-   One fixed 8-byte word per player per frame. That is the whole hot
-   path. The size is measured, not chosen for roundness: over 26
-   drivers, counting each player's digital logical inputs at one bit
-   plus each of that player's analog axes at its mask width
-   [verified, tools/netplay_wordsize.py]:
+   One word per player per frame, its shape fixed for the session and
+   computed from the driver at handshake. That is the whole hot path.
+
+   Digital first, measured over 26 drivers by counting each player's
+   logical inputs at one bit [verified, tools/netplay_wordsize.py]:
 
    +----------+---------+--------+------+----------------------+
    | Driver   | Digital | Analog | Bits | What sets it         |
@@ -327,18 +327,35 @@ Table of Contents
    word already being sent, needs no extra field and no second message
    type, and leaving it out would save zero bytes.
 
-   ANALOG IS USUALLY 8 BITS AND IS NOT ALWAYS. Across 26 drivers 33 of
-   35 analog fields are 0xff and the other two are tempest's 4-bit knobs
-   - trackballs, pedals, steering, light guns and AD sticks all came in
-   at 8. [verified] Then bublbob2o turned up with two 12-bit dials,
-   mask 0x0fff on :DIAL.0 and :DIAL.1. [verified]
+   ANALOG IS NOT 8 BITS. The whole driver set says so, read out of
+   -listxml rather than sampled: 928 of 6829 parent drivers have an
+   analog axis, 2675 axes in all
+   [verified, tools/netplay_analog.py].
 
-   So the four 8-bit axis slots below do NOT cover every driver, and the
-   sample that said they did was 26 drivers wide. A 12-bit axis has to
-   either lose its low bits or refuse the session (4.4 REFUSE_TOOWIDE);
-   losing bits silently is the wrong answer for a format whose whole job
-   is that two peers compute the same thing. [open] Analog is not
-   carried at all yet, so nothing is wrong today - the design note is.
+   +-----------+-------+--------+------------+
+   | Mask bits | Axes  | Share  | Cumulative |
+   +===========+=======+========+============+
+   | 2 to 7    | 224   | 8.4%   | 8.4%       |
+   +-----------+-------+--------+------------+
+   | 8         | 1907  | 71.3%  | 79.7%      |
+   +-----------+-------+--------+------------+
+   | 9 to 12   | 378   | 14.1%  | 93.8%      |
+   +-----------+-------+--------+------------+
+   | 14 to 16  | 166   | 6.2%   | 100.0%     |
+   +-----------+-------+--------+------------+
+
+   So an 8-bit axis slot truncates ONE AXIS IN FIVE, and the 16-bit
+   axes are disproportionately the light gun games: ptblank2,
+   timecris, golgo13 and ghlpanic on Namco System 11 and 12, jdredd
+   on ZN, kdeadeye on Konami GV, hidctch3, totlvice, evilngt.
+
+   FOUR AXIS SLOTS ARE NOT ENOUGH EITHER. Axes per player run 1 (239
+   drivers), 2 (512), 3 (121), 4 (44), 5 to 7 (12). harddriv and
+   racedriv need seven. A further 19 drivers hold an axis count that
+   is not divisible by their player count - aceattac at 10 axes over
+   4 players, the bmiidx family at 7 over 2 - so their per-player
+   shape has to be read from the live port list, which is what
+   netplay_inputmap::build does. [verified]
 
    Worth knowing that bublbob2o's dials are not gameplay controls and
    read the same default on both peers, so a two-peer session on it held
@@ -346,27 +363,49 @@ Table of Contents
    An unsynchronised analog input is a desync waiting for a driver that
    actually reads one. [verified]
 
-   That is the GAME-VISIBLE width, which is the one that matters: the
-   mask decides how many bits reach the driver through
-   ioport_port::read(). Do not send analog as record_port's s32 m_accum.
-   m_accum is an accumulator whose mapping to the port value runs through
-   m_sensitivity, m_reverse, clamping and wrapping - all of it
-   configuration that belongs in the handshake (1.1). Sending the
-   post-mask value instead makes the payload independent of every one of
-   those settings. 4 bytes per axis would be sending 24 bits of nothing.
+   THE AXIS CARRIES ITS POST-MASK VALUE, NOT m_accum. The mask width
+   above is the GAME-VISIBLE width, which is the one that matters:
+   the mask decides how many bits reach the driver through
+   ioport_port::read(). m_accum is something else - an accumulator in
+   device space, which ioport.cpp record_port writes as a full s32
+   because an INP file has no handshake to pin the settings behind
+   it.
 
-   The layout follows directly, 32 bits of each:
+   Two measurements say why the post-mask value is the better unit.
+   m_accum is apply_inverse_sensitivity(rawvalue), which is rawvalue
+   * 100 / m_sensitivity over a raw range of +/- 65536 (input.h
+   INPUT_ABSOLUTE_MIN/MAX); the lowest default sensitivity in the
+   driver set is 1, on breakout's paddle, which puts m_accum at
+   +/- 6553600 - 24 bits plus sign. And for a WRAPPING axis it has no
+   bound at all, because analog_field::frame_update skips
+   apply_min_max when m_wraps and m_accum is a running total: 354 of
+   the 928 analog drivers have a dial, trackball or mouse.
+   [verified, tools/netplay_analog.py]
 
-       bits  0-31    digital, one bit per logical input, assigned by
-                     the translation table (1.2)
-       bits 32-39    analog axis 0
-       bits 40-47    analog axis 1
-       bits 48-55    analog axis 2
-       bits 56-63    analog axis 3
+   The post-mask value is bounded by adjmin..adjmax by construction,
+   fits the mask width, and needs no peer to agree about sensitivity,
+   reverse or scaling - so two players may run different sensitivities
+   and only feel different, where under m_accum they would diverge.
 
-   32 digital bits covers mahjong's 30. Four analog axes covers the
-   measured maximum of three. A narrower axis - tempest - uses the low
-   bits of its byte and the table carries the mask.
+   The layout follows:
+
+       offset 0            digital bitmap, ceil(D/8) bytes. Logical
+                           input i is bit (i % 8) of byte (i / 8),
+                           assigned by the translation table (1.2)
+       then per axis k     1 byte if that axis's mask is 8 bits or
+                           fewer, otherwise 2 bytes little-endian
+
+   D is capped at 32 and enforced; axes at 12, widths at 16 bits. The
+   whole word is at most 28 bytes by those limits and at most 15 by
+   measurement, against a median of 8 - so the typical driver pays
+   what the old fixed word cost and the analog ones pay for what they
+   actually use.
+
+   BYTE-ALIGNED FIELDS RATHER THAN A PACKED BIT RUN. Packing every
+   field end to end would save three bytes on the worst driver and
+   nothing on the median [verified, tools/netplay_analog.py]. What
+   alignment buys is a word legible in a hex dump and an axis
+   accessor that cannot straddle a byte.
 
    THE MEASUREMENT IS 26 DRIVERS, AND THE STRUCTURAL BOUND IS HIGHER.
    The per-player enum blocks are DIGITAL_JOYSTICK 12, MAHJONG 29,
@@ -386,13 +425,33 @@ Table of Contents
    is refused with a specific reason (4.4) rather than silently losing
    its high bits.
 
-   FIXED, NOT PACKED PER DRIVER. The same table would equally support a
-   per-driver width of ceil(bits/8) - 1 byte for dino, 5 for daytona -
-   and that is still the wrong trade. A fixed slot puts frame N player P
-   at a constant offset, which keeps the hot path branch-free, makes
-   packet length a function of the tier alone, and makes the batching
-   and redundancy arithmetic of 1.6.2 trivial. The bandwidth it costs is
-   0.7 KB/s at tier 1 (below), on a link with hundreds available.
+   PER DRIVER, FIXED WITHIN A SESSION. This was once a fixed 8 bytes
+   for every driver, on the reasoning that a constant offset keeps the
+   hot path branch-free and the bandwidth saved was worth nothing.
+   The bandwidth argument still holds and is still not the point: what
+   a fixed word cannot do is carry a 16-bit axis, and one axis in five
+   is wider than 8 bits.
+
+   The property worth keeping is the CONSTANT OFFSET, not the constant
+   size, and deriving the word once at handshake keeps it: frame N
+   player P still sits at a fixed place (3.5), the arithmetic of 1.6.2
+   is unchanged, and packet length is still a function of the tier -
+   of the tier and one session constant.
+
+   NOTHING ON THE WIRE CARRIES THE LAYOUT. Both peers build the
+   translation table from the same driver before frame 0, so the word
+   shape is common knowledge, and the inputmap digest (4.2) covers the
+   axis table and the layout - a disagreement is a refused session
+   rather than two peers reading each other at the wrong offset. If one
+   ever slipped past the digest, parse_input's exact-length check is
+   the second net.
+
+   A WIDER WORD MEANS FEWER WORDS PER DATAGRAM, which touches exactly
+   one thing: the clamp in send_window. The redundancy window itself is
+   frame arithmetic (1.7) and is untouched. The clamp was unreachable
+   while the word was 8 bytes - 148 fit a datagram and a window is at
+   most 128 - and at the widest measured word 79 fit, which a window
+   only exceeds at a delay in the seventies.
 1.6.2.  What tiers actually buy, and what they do not
 
    NOT BANDWIDTH. Four players at 8 bytes is 32 bytes of payload per
@@ -1226,17 +1285,29 @@ Table of Contents
 3.5.  INPUT, the hot path
 
        header            12 bytes, 3.2
-       words             nframes x popcount(player_mask) x 8 bytes
+       words             nframes x popcount(player_mask) x word_bytes
        hash trailer       8 bytes if flags & HASH_TRAILER
 
    Words are ordered frame-major, then by ascending player slot, so the
    word for frame base_frame + i and the n'th set bit of player_mask is
-   at a fixed offset. The 8-byte word is 1.6.1.
+   at a fixed offset.
 
-   At tier 1 with four players that is a 44-byte datagram, 52 with a
-   hash. At tier 6 carrying one redundant batch, 12 + 12 x 4 x 8 = 396.
-   Every case is far inside any MTU, so the format never fragments and
-   never needs to.
+   word_bytes IS NOT A FIELD. It is the driver-derived word size of
+   1.6.1, constant for the session and computed independently by both
+   peers, so it appears in no packet. A receiver that disagreed would
+   fail the length check below, and the handshake digest refuses the
+   session before that can happen.
+
+   A receiver must reject a datagram whose length is not exactly
+   12 + nframes x popcount(player_mask) x word_bytes, plus 8 with a
+   hash trailer. Short would read past the end; long means the two ends
+   disagree about the format, which is not something to paper over.
+
+   At tier 1 with four players and an 8-byte word that is a 44-byte
+   datagram, 52 with a hash; at tier 6 carrying one redundant batch,
+   12 + 12 x 4 x 8 = 396. The widest word measured, 15 bytes, takes
+   that last case to 732. Every case is far inside any MTU, so the
+   format never fragments and never needs to.
 
 3.6.  HASH
 

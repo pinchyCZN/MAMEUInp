@@ -322,6 +322,62 @@ The binary. An agent rebuilding to test its own change rebuilds the exe the
 user runs. Close any running instance first - the link fails with LNK1104 and
 leaves the PREVIOUS exe in place, so the next run silently tests old code.
 
+### 12. Never run an unbounded build, and never a concurrent one
+
+**An agent builds with `tools\build.bat` and nothing else.** Two projects
+at a time, multiprocessor compilation off. That matches the user's own
+Options -> Projects and Solutions -> Build and Run setting, so an agent
+build never loads the machine harder than their own does.
+
+```
+tools\build.bat                  Release Win32, capped
+tools\build.bat Release emu      one project
+```
+
+**Do not raise the cap.** Not for a "quick" full rebuild, not to save
+wall-clock time. The user works on this machine while a build runs.
+
+#### 12.1. Capping needs two knobs, and one of them is not a property
+
+A bare `msbuild /m` on this solution spawned **46 `cl.exe`** and made the
+machine unusable. There are two multipliers:
+
+| Knob | What it does | How to cap it |
+|---|---|---|
+| `/m` | runs that many of the 131 **projects** at once; unbounded with no number | `/m:2` |
+| `/MP` | each project's `cl.exe` forks per core as well | `tools/cap_mp.props` |
+
+`/p:MultiProcessorCompilation=false` ON THE COMMAND LINE DOES NOTHING.
+genie writes that setting into an `ItemDefinitionGroup`, which makes it
+`ClCompile` **item metadata**, and a global property does not override item
+metadata. `tools/cap_mp.props` sets it from inside a target instead, where
+the items already exist, and is injected with
+`/p:ForceImportAfterCppTargets`. `[verified]` Release|Win32 carries
+`MultiProcessorCompilation=true` in all 131 generated projects.
+
+**Setting it in the MSVC GUI does not hold.** The `.vcxproj` files under
+`build/projects/` are generated; `make vs2017 ...` overwrites them and the
+setting with them. Only the IDE's own "maximum number of parallel project
+builds" is a user setting that survives, and it caps projects, not `/MP`.
+
+#### 12.2. One build at a time, always
+
+Two builds over one obj tree kill each other: the loser dies with
+`Cannot open compiler generated file: Permission denied`. The lasting
+damage is worse than the failure - **a `cl.exe` killed mid-write leaves a
+truncated `.obj` that the next build treats as up to date**, so a later
+link fails or, worse, succeeds against stale code.
+
+`tools\build.bat` refuses to start if `msbuild.exe` or `cl.exe` is already
+running, which also covers the user building in the IDE. If a build was
+ever killed part-way, say so and recommend a `Rebuild` of the affected
+projects rather than trusting the obj tree.
+
+**Before starting any build, check whether the user is already building.**
+A rebuild triggered by an `ioport.h` change touches every driver and runs
+for a long time; starting one on a machine somebody is working on is not
+a neutral act.
+
 ---
 
 ## Repository layout
@@ -349,6 +405,10 @@ MAMEUI/                        upstream Robbbert/mameui @ tag210, branch netplay
     retab.py                   tab/space rule for our own sources
     mech_scan.py               resolve MACHINE_MECHANICAL through the macros
     gen_coinop.py              regenerate coinop.flt + coinop.lua from arcade.*
+    netplay_analog.py          analog axis widths and counts, from -listxml
+    netplay_wordtest.cpp       wire-format round trip, standalone, no ROM
+    build.bat                  THE build command - rule 12
+    cap_mp.props               turns /MP off; injected by build.bat
 
   server/                      the relay server - standalone        [ours]
 
@@ -418,7 +478,12 @@ make vs2017 OSD=winui TARGET=mame SUBTARGET=coinop PTR64=1 NOWERROR=1 \
      DEBUG_DIR=n:\DEV\MAMEUI DEBUG_ARGS=-window
 ```
 
-Solution lands in `build/projects/winui/mamecoinop/vs2017/`.
+Solution lands in `build/projects/winui/mamecoinop/vs2017/`. That command only
+GENERATES the projects; it compiles nothing.
+
+**To compile, use `tools\build.bat` - never a bare `msbuild`.** Rule 12: two
+projects at a time, `/MP` off, and it refuses to start while another build is
+running. A bare `msbuild /m` here spawns 46 `cl.exe`.
 
 For netplay iteration use a `SOURCES=` build instead - it derives the needed
 CPUs, sound and video devices from the named drivers, so it compiles in minutes

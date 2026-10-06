@@ -71,6 +71,43 @@ u32 classify(const ioport_field &field, player_t &player)
 	return LOGICAL_NONE;
 }
 
+unsigned popcount32(u32 v)
+{
+	unsigned n = 0;
+	for ( ; v != 0; v >>= 1)
+		n += (v & 1u);
+	return n;
+}
+
+
+unsigned count_trailing_zeros(u32 v)
+{
+	if (v == 0)
+		return 0;
+
+	unsigned n = 0;
+	while ((v & 1u) == 0)
+	{
+		v >>= 1;
+		n++;
+	}
+	return n;
+}
+
+
+// A mask with a hole in it cannot be carried as one right-justified
+// field. Every analog mask measured over 2675 axes is a contiguous run,
+// including the shifted ones - 0xff00, 0x0018, 0x00e0.
+// [verified, tools/netplay_analog.py]
+bool contiguous_mask(u32 v)
+{
+	if (v == 0)
+		return false;
+
+	const u32 r = v >> count_trailing_zeros(v);
+	return (r & (r + 1)) == 0;
+}
+
 } // anonymous namespace
 
 
@@ -99,6 +136,7 @@ bool inputmap::build(running_machine &machine)
 	m_index.clear();
 	m_logical.clear();
 	m_unowned.clear();
+	std::memset(&m_layout, 0, sizeof(m_layout));
 	m_digest = 0;
 	m_config_digest = 0;
 	m_players = 0;
@@ -155,7 +193,18 @@ bool inputmap::build(running_machine &machine)
 		return false;
 	}
 
-	// pass 2: place every non-toggle digital field
+	// pass 2: place every non-toggle digital field, and every axis.
+	//
+	// A PLAYER'S AXES ARE NUMBERED IN THIS WALK'S ORDER - port tag, then
+	// field declaration - which is the same on every peer because
+	// ioport_list is an ordered map. The widths collected here are what
+	// the layout is built from below, so there is one walk rather than
+	// two that have to agree.
+	u8 pbits[MAX_PLAYERS][MAX_AXES];
+	u8 pcount[MAX_PLAYERS];
+	std::memset(pbits, 0, sizeof(pbits));
+	std::memset(pcount, 0, sizeof(pcount));
+
 	for (auto &entry : portlist)
 	{
 		ioport_port &port = *entry.second.get();
@@ -169,7 +218,49 @@ bool inputmap::build(running_machine &machine)
 
 		for (const ioport_field &field : port.fields())
 		{
-			if (field.is_analog() || field.toggle())
+			if (field.is_analog())
+			{
+				player_t ap = 0;
+				classify(field, ap);
+
+				const ioport_value m = field.mask();
+				const unsigned wid = popcount32(u32(m));
+
+				// AN ANALOG FIELD NOBODY OWNS IS A DESYNC, NOT A WARNING.
+				// Its value reaches the driver through ioport_port::read()
+				// whatever we do, so a field we cannot route stays local
+				// and the two peers compute different machine state from
+				// frame one, with nothing in any log to say why. Landing in
+				// m_unowned makes it a refused session instead.
+				if ((ap < 1) || (ap > MAX_PLAYERS) || (m == 0)
+						|| (wid > AXIS_MAX_BITS) || !contiguous_mask(u32(m))
+						|| (pcount[ap - 1] >= MAX_AXES)
+						|| (field.live().analog == nullptr))
+				{
+					m_unowned.push_back(util::string_format(
+							"%s:%s (analog, mask %08x, player %d)",
+							pe.tag,
+							(field.name() != nullptr) ? field.name() : "?",
+							u32(m), int(ap)));
+					continue;
+				}
+
+				axis a;
+				a.an = field.live().analog;
+				a.mask = m;
+				a.shift = u8(count_trailing_zeros(u32(m)));
+				a.bits = u8(wid);
+				a.player = ap;
+				a.index = pcount[ap - 1];
+				pe.axes.push_back(a);
+
+				pbits[ap - 1][pcount[ap - 1]] = u8(wid);
+				pcount[ap - 1]++;
+				m_players = std::max(m_players, ap);
+				continue;
+			}
+
+			if (field.toggle())
 				continue;
 
 			any_digital = true;
@@ -202,10 +293,41 @@ bool inputmap::build(running_machine &machine)
 			pe.fields.push_back(o);
 		}
 
-		if (any_digital)
+		// OR AN AXIS. A port of nothing but analog fields - arkanoid's
+		// two spinners, area51's four FAKE axes - was skipped while the
+		// format was digital only. Skipping it now means capture and
+		// inject never see the axis at all.
+		if (any_digital || !pe.axes.empty())
 		{
 			m_index[&port] = u32(m_ports.size());
 			m_ports.push_back(std::move(pe));
+		}
+	}
+
+	// THE LAYOUT IS THE UNION OF EVERY PLAYER'S AXES, sized by the
+	// widest. protocol.txt 3.5 puts frame N player P at a fixed offset, so
+	// one shape has to serve every slot and a player short of the maximum
+	// leaves its tail zero. aceattac is the driver that needs this: its
+	// four players hold two, three, one and two axes.
+	{
+		unsigned axes = 0;
+		for (unsigned i = 0; i < MAX_PLAYERS; i++)
+			axes = std::max(axes, unsigned(pcount[i]));
+
+		u8 axis_bits[MAX_AXES];
+		std::memset(axis_bits, 0, sizeof(axis_bits));
+		for (unsigned k = 0; k < axes; k++)
+			for (unsigned i = 0; i < MAX_PLAYERS; i++)
+				if (pbits[i][k] > axis_bits[k])
+					axis_bits[k] = pbits[i][k];
+
+		if (!layout_build(m_layout, unsigned(m_logical.size()),
+				axis_bits, axes))
+		{
+			osd_printf_error("netplay: %s does not fit the word: %d digital bits, %d axes\n",
+					machine.system().name, int(m_logical.size()), int(axes));
+			m_built = true;
+			return false;
 		}
 	}
 
@@ -281,7 +403,17 @@ bool inputmap::build(running_machine &machine)
 		h = mix(h, u64(pe.shared_mask));
 		for (const owned &o : pe.fields)
 			h = mix(h, (u64(o.mask) << 16) | (u64(o.player) << 8) | u64(o.bit));
+
+		// THE AXIS TABLE IS PART OF THE MAPPING. Two peers that number a
+		// player's axes differently, or disagree on a width, read each
+		// other's word at the wrong offset while agreeing on every other
+		// digest. protocol.txt 4.2
+		for (const axis &a : pe.axes)
+			h = mix(h, (u64(a.mask) << 32) | (u64(a.player) << 24)
+					| (u64(a.index) << 16) | (u64(a.bits) << 8) | u64(a.shift));
 	}
+	h = mix(h, (u64(m_layout.bytes) << 8) | u64(m_layout.axes));
+	h = mix(h, u64(m_layout.digital_bytes));
 	// THE CONFIG DIGEST IS DELIBERATELY NOT FOLDED IN HERE.
 	//
 	// It was, and that made a DIP mismatch a clean refusal at join - but
@@ -546,6 +678,20 @@ void inputmap::capture_port(ioport_port &port, input_word &word) const
 	for (const owned &o : pe->fields)
 		if ((o.player == LOCAL_SLOT) && ((digital & o.mask) != 0))
 			word_set_digital(word, o.bit, true);
+
+	// THE AXES OF LOCAL_SLOT, the same rule the digital half uses: the
+	// human at this keyboard drives player 1's bindings whatever slot
+	// the session gave them, so nobody has to learn a different gun
+	// because they joined second.
+	//
+	// netplay_value() is the POST-MASK value - apply_settings(m_accum)
+	// right-justified - so what goes on the wire is the number the
+	// driver would have read, not the device-space accumulator behind
+	// it. notes/protocol.txt 1.6.1
+	for (const axis &a : pe->axes)
+		if (a.player == LOCAL_SLOT)
+			word_set_analog(word, m_layout, a.index,
+					u32(a.an->netplay_value()));
 }
 
 
@@ -565,7 +711,8 @@ void inputmap::inject_port(ioport_port &port, const input_word *words, player_t 
 	{
 		if ((o.player < 1) || (o.player > count))
 			continue;
-		if ((word_digital(words[o.player - 1]) & (u32(1) << o.bit)) != 0)
+		if ((word_digital(words[o.player - 1], m_layout)
+				& (u32(1) << o.bit)) != 0)
 			value |= o.mask;
 	}
 
@@ -586,6 +733,22 @@ void inputmap::inject_port(ioport_port &port, const input_word *words, player_t 
 	// state and local options sitting between a keypress and the port value.
 	// netplay-hooks.txt 1.5
 	port.live().digital = value;
+
+	// THE AXES, which digital cannot carry: ioport_port::read() applies
+	// analog AFTER digital and overwrites its own mask from m_accum, so a
+	// value written into live().digital for an analog field is discarded.
+	// netplay_force replaces the result of apply_settings inside
+	// analog_field::read instead, which is also what crosshair_read uses -
+	// so the drawn crosshair follows the networked axis rather than this
+	// machine's device. See the NETPLAY block in ioport.cpp.
+	for (const axis &a : pe->axes)
+	{
+		if ((a.player < 1) || (a.player > count))
+			continue;
+
+		a.an->netplay_force(s32(word_analog(words[a.player - 1],
+				m_layout, a.index)));
+	}
 }
 
 
@@ -600,6 +763,14 @@ std::string inputmap::describe() const
 	out += util::string_format("players=%d digital_bits=%d/%d analog_seen=%d unowned=%d fits=%s\n",
 			int(m_players), int(m_logical.size()), int(DIGITAL_BITS),
 			int(m_analog_seen), int(m_unowned.size()), m_fits ? "yes" : "NO");
+
+	out += util::string_format("word=%d bytes (digital %d, axes %d)\n",
+			int(m_layout.bytes), int(m_layout.digital_bytes),
+			int(m_layout.axes));
+	for (unsigned k = 0; k < m_layout.axes; k++)
+		out += util::string_format("  axis %d at byte %d, %d byte(s)\n",
+				int(k), int(m_layout.axis_off[k]),
+				int(m_layout.axis_bytes[k]));
 	out += util::string_format("digest=%016llx\n",
 			static_cast<unsigned long long>(m_digest));
 
@@ -622,6 +793,11 @@ std::string inputmap::describe() const
 		for (const owned &o : pe.fields)
 			out += util::string_format("      p%d bit %2d mask %08x\n",
 					int(o.player), int(o.bit), u32(o.mask));
+		for (const axis &a : pe.axes)
+			out += util::string_format(
+					"      p%d axis %d mask %08x shift %d bits %d\n",
+					int(a.player), int(a.index), u32(a.mask), int(a.shift),
+					int(a.bits));
 	}
 
 	for (const std::string &u : m_unowned)

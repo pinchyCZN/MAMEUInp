@@ -23,14 +23,17 @@ namespace netplay {
 //-------------------------------------------------
 
 size_t build_input(u8 *buf, size_t cap, const packet_header &head,
-		const input_word *words, const u64 *hash)
+		const input_word *words, const u64 *hash, unsigned word_bytes)
 {
 	const bool with_hash = (hash != nullptr);
-	const size_t need = input_bytes(head.nframes, head.player_mask, with_hash);
+	const size_t need = input_bytes(head.nframes, head.player_mask, with_hash,
+			word_bytes);
 
 	if ((buf == nullptr) || (need > cap) || (need > MAX_DATAGRAM))
 		return 0;
 	if ((head.nframes == 0) || (head.player_mask == 0))
+		return 0;
+	if ((word_bytes == 0) || (word_bytes > WORD_MAX_BYTES))
 		return 0;
 
 	put_u8(buf + 0, head.type);
@@ -47,8 +50,11 @@ size_t build_input(u8 *buf, size_t cap, const packet_header &head,
 	const unsigned n = head.nframes * popcount8(head.player_mask);
 	for (unsigned i = 0; i < n; i++)
 	{
-		put_u64(p, words[i]);
-		p += sizeof(input_word);
+		// The word's bytes ARE the wire bytes - every field inside it is
+		// byte-aligned and already little-endian, so there is nothing to
+		// serialise. Only the session's width goes out.
+		std::memcpy(p, words[i].b, word_bytes);
+		p += word_bytes;
 	}
 
 	if (with_hash)
@@ -93,7 +99,8 @@ bool parse_header(const u8 *buf, size_t len, packet_header &head)
 //-------------------------------------------------
 
 bool parse_input(const u8 *buf, size_t len, packet_header &head,
-		input_word *words, unsigned max_words, u64 &hash, bool &has_hash)
+		input_word *words, unsigned max_words, u64 &hash, bool &has_hash,
+		unsigned word_bytes)
 {
 	hash = 0;
 	has_hash = false;
@@ -104,13 +111,15 @@ bool parse_input(const u8 *buf, size_t len, packet_header &head,
 		return false;
 	if ((head.nframes == 0) || (head.player_mask == 0))
 		return false;
+	if ((word_bytes == 0) || (word_bytes > WORD_MAX_BYTES))
+		return false;
 
 	has_hash = ((head.flags & FLAG_HASH_TRAILER) != 0);
 
 	// The declared shape must match the datagram exactly. A short packet
 	// would read past the end and a long one means the sender and receiver
 	// disagree about the format, which is not something to paper over.
-	if (len != input_bytes(head.nframes, head.player_mask, has_hash))
+	if (len != input_bytes(head.nframes, head.player_mask, has_hash, word_bytes))
 		return false;
 
 	const unsigned n = head.nframes * popcount8(head.player_mask);
@@ -120,8 +129,11 @@ bool parse_input(const u8 *buf, size_t len, packet_header &head,
 	const u8 *p = buf + HEADER_BYTES;
 	for (unsigned i = 0; i < n; i++)
 	{
-		words[i] = get_u64(p);
-		p += sizeof(input_word);
+		// ZEROED ABOVE word_bytes, not left as whatever the caller's array
+		// held. The self-check and the ring both compare whole words.
+		word_clear(words[i]);
+		std::memcpy(words[i].b, p, word_bytes);
+		p += word_bytes;
 	}
 
 	if (has_hash)

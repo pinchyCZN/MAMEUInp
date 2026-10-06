@@ -1269,6 +1269,23 @@ public:
 	float crosshair_read();
 	void frame_update(running_machine &machine);
 
+	// NETPLAY: an axis under session control. netplay_value is the
+	// post-mask, game-visible number read() inserts into the port;
+	// netplay_force makes read() and crosshair_read() use the value the
+	// session agreed instead of this machine's device. The post-mask value
+	// is deliberately the unit of exchange: m_accum is in device space and
+	// its width depends on m_sensitivity, and for a wrapping axis it has
+	// no bound at all. See src/emu/netplay/netplay_inputmap.h.
+	s32 netplay_value() const
+	{
+		return apply_settings(m_accum) & (m_field.mask() >> m_shift);
+	}
+	void netplay_force(s32 value)
+	{
+		m_netplay_forced = true;
+		m_netplay_value = value;
+	}
+
 private:
 	// helpers
 	s32 apply_min_max(s32 value) const;
@@ -1296,6 +1313,11 @@ private:
 	s32                 m_accum;                // accumulated value (including relative adjustments)
 	s32                 m_previous;             // previous adjusted value
 	s32                 m_previousanalog;       // previous analog value
+
+	// NETPLAY: set once per frame by netplay_inputmap::inject_port; false
+	// outside a session, which is what keeps this inert for single player.
+	bool                m_netplay_forced;
+	s32                 m_netplay_value;
 
 	// parameters for modifying live values
 	s32                 m_minimum;              // minimum adjusted value

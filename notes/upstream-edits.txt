@@ -233,7 +233,27 @@ Table of Contents
    | src/emu/ioport.cpp           | four netplay hooks plus the    |
    |                              | state-hash call, all in        |
    |                              | ioport_manager::frame_update   |
-   |                              | and ioport_port::read          |
+   |                              | and ioport_port::read. Plus    |
+   |                              | three one-block analog edits:  |
+   |                              | two members initialised in     |
+   |                              | analog_field's ctor, a forced  |
+   |                              | value honoured in              |
+   |                              | analog_field::read after       |
+   |                              | apply_settings, and the same   |
+   |                              | in crosshair_read so a remote  |
+   |                              | player's crosshair moves       |
+   +------------------------------+--------------------------------+
+   | src/emu/ioport.h             | analog_field gains             |
+   |                              | netplay_value / netplay_force  |
+   |                              | / netplay_release and the two  |
+   |                              | members behind them. Needed    |
+   |                              | because an analog axis cannot  |
+   |                              | be injected through            |
+   |                              | live().digital: read() applies |
+   |                              | analog after digital and       |
+   |                              | overwrites its own mask.       |
+   |                              | WIDE REBUILD - ioport.h        |
+   |                              | reaches every driver           |
    +------------------------------+--------------------------------+
    | src/emu/machine.cpp          | netplay::manager::safe_point   |
    |                              | beside handle_saveload in      |

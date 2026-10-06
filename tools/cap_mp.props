@@ -1,0 +1,31 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Caps the compiler fan-out for an agent build. tools/build.bat injects this
+  with /p:ForceImportAfterCppTargets and nothing else references it.
+
+  WHY A PROPS FILE AND NOT /p:MultiProcessorCompilation=false. That property
+  on the command line does nothing here. genie writes
+  <MultiProcessorCompilation>true</MultiProcessorCompilation> into an
+  ItemDefinitionGroup for Release, which makes it ClCompile ITEM METADATA,
+  and a global property does not override item metadata. Setting it inside a
+  target does, because by then the items exist.
+
+  Verified: Release|Win32 carries MultiProcessorCompilation=true in all 131
+  generated projects.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Target Name="NetplayCapMultiProcessor" BeforeTargets="ClCompile">
+    <ItemGroup>
+      <ClCompile>
+        <MultiProcessorCompilation>false</MultiProcessorCompilation>
+      </ClCompile>
+    </ItemGroup>
+
+    <!-- set NP_VERBOSE_CAP=1 to prove the target actually fired -->
+    <Message Importance="high"
+             Condition="'$(NP_VERBOSE_CAP)'=='1'"
+             Text="cap_mp: /MP off for $(MSBuildProjectName) ($(Configuration)|$(Platform))" />
+  </Target>
+
+</Project>
