@@ -388,6 +388,7 @@ void NetplayClear(void)
 
 #define LOBBY_TIMER     1
 #define LOBBY_TICK_MS   100
+#define PING_WAIT_MS    600
 
 enum lobby_state { LOBBY_IDLE, LOBBY_CONNECTING, LOBBY_UP };
 
@@ -395,6 +396,9 @@ static SOCKET       s_sock = INVALID_SOCKET;
 static lobby_state  s_state = LOBBY_IDLE;
 static std::string  s_rx;
 static std::string  s_name;
+
+// Round trip to the server in milliseconds, -1 when it was not caught.
+static int          s_ping_ms = -1;
 
 // Defined with the game panel below; lobby_close has to reach it.
 static void game_enable(HWND hDlg);
@@ -452,6 +456,56 @@ static void lobby_send_line(const std::string &line)
 }
 
 
+// THE HANDSHAKE IS THE MEASUREMENT. A non-blocking connect returns at once
+// and the socket turns writable when the server's SYN-ACK arrives, so the
+// time between the two is one round trip - already paid for, just not
+// previously looked at.
+//
+// TIMED HERE AND NOT FROM THE DIALOG TIMER. That ticks every LOBBY_TICK_MS,
+// which would add up to that much to every reading and leave 20 ms and 120 ms
+// indistinguishable - the one distinction the figure exists to make. The
+// dialog is modal and the player has just pressed Connect, so a bounded wait
+// of a few hundred milliseconds is the connect they were waiting for anyway.
+static void measure_ping(void)
+{
+	s_ping_ms = -1;
+
+	LARGE_INTEGER freq, t0;
+	if (!QueryPerformanceFrequency(&freq) || (freq.QuadPart == 0))
+		return;
+	QueryPerformanceCounter(&t0);
+
+	for ( ; ; )
+	{
+		fd_set wr, ex;
+		FD_ZERO(&wr);
+		FD_ZERO(&ex);
+		FD_SET(s_sock, &wr);
+		FD_SET(s_sock, &ex);
+
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = 2000;      // 2 ms, so the reading is not the poll rate
+		const int r = select(0, nullptr, &wr, &ex, &tv);
+
+		LARGE_INTEGER now;
+		QueryPerformanceCounter(&now);
+		const double ms = double(now.QuadPart - t0.QuadPart) * 1000.0
+				/ double(freq.QuadPart);
+
+		if ((r > 0) && FD_ISSET(s_sock, &ex))
+			return;             // refused; lobby_poll reports it
+		if ((r > 0) && FD_ISSET(s_sock, &wr))
+		{
+			s_ping_ms = int(ms + 0.5);
+			return;
+		}
+		if (ms > PING_WAIT_MS)
+			return;             // the dialog timer finishes the connect
+	}
+}
+
+
 static void lobby_open(HWND hDlg)
 {
 	char host[64];
@@ -505,6 +559,7 @@ static void lobby_open(HWND hDlg)
 	freeaddrinfo(res);
 
 	connect(s_sock, reinterpret_cast<struct sockaddr *>(&a), sizeof(a));
+	measure_ping();
 	s_state = LOBBY_CONNECTING;
 	SetDlgItemTextA(hDlg, IDC_NPL_CONNECT, "&Disconnect");
 	lobby_status(hDlg, "Connecting...");
@@ -1066,6 +1121,15 @@ static void lobby_poll(HWND hDlg)
 			return;
 		s_state = LOBBY_UP;
 		lobby_status(hDlg, "Connected.");
+
+		if (s_ping_ms >= 0)
+		{
+			char note[80];
+			std::snprintf(note, sizeof(note),
+					"* your ping to the server: %d ms", s_ping_ms);
+			lobby_say(hDlg, note);
+		}
+
 		lobby_send_line("HELLO " + s_name);
 		return;
 	}
