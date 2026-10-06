@@ -3995,6 +3995,7 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 	// NETPLAY: configure, run, then clear - the emulator runs in this
 	// process, so leaving it set would netplay the next ordinary game.
 	case ID_FILE_NETPLAY:
+		for ( ; ; )
 		{
 			netplay_launch cfg;
 			if (!NetplayLobbyDialog(hMain, Picker_GetSelectedItem(hwndList), &cfg))

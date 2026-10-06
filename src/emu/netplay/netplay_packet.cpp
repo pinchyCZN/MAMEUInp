@@ -284,6 +284,39 @@ const char *refuse_text(u8 reason)
 
 
 //-------------------------------------------------
+//  BYE
+//-------------------------------------------------
+
+size_t build_bye(u8 *buf, size_t cap, u16 session, player_t from, u8 reason)
+{
+	const size_t len = control_head(buf, cap, MSG_BYE, session, 0, 4);
+	if (len == 0)
+		return 0;
+
+	u8 *const q = buf + HEADER_BYTES;
+	put_u8(q + 0, u8(from));
+	put_u8(q + 1, reason);
+	put_u16(q + 2, 0);
+	return len;
+}
+
+
+bool parse_bye(const u8 *buf, size_t len, player_t &from, u8 &reason)
+{
+	packet_header head;
+	if (!parse_header(buf, len, head) || (head.type != MSG_BYE))
+		return false;
+	if (len != BYE_BYTES)
+		return false;
+
+	const u8 *const q = buf + HEADER_BYTES;
+	from = player_t(get_u8(q + 0));
+	reason = get_u8(q + 1);
+	return true;
+}
+
+
+//-------------------------------------------------
 //  UI commands
 //-------------------------------------------------
 

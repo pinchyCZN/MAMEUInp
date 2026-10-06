@@ -132,6 +132,7 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_stall_warned(false)
 	, m_refused_reported(false)
 	, m_chat_n(0)
+	, m_departed(0)
 	, m_enter_prev(false)
 	, m_enter_edge(false)
 	, m_chat_open(false)
@@ -787,6 +788,15 @@ void manager::poll_link()
 		{
 			if (cfg_from != m_local)
 				take_config(cfg_digest, cfg_flags, cfg_recs, cfg_count);
+			continue;
+		}
+
+		player_t gone = 0;
+		u8 why_gone = 0;
+		if (parse_bye(buf, len, gone, why_gone))
+		{
+			if (gone != m_local)
+				take_bye(gone, why_gone);
 			continue;
 		}
 
@@ -1693,6 +1703,56 @@ void manager::take_snapshot()
 
 
 //-------------------------------------------------
+//  send_bye / take_bye
+//-------------------------------------------------
+
+// SENT SEVERAL TIMES AND NEVER REPEATED AFTER. This is the last thing the
+// process does on the wire, so there is no later frame to carry it again and
+// nothing to retransmit from - a single lost datagram would leave the others
+// believing the link died. Five copies cost nothing on the way out.
+void manager::send_bye()
+{
+	if ((m_link == nullptr) || !m_link->ready())
+		return;
+
+	u8 out[MAX_DATAGRAM];
+	// Session 0 like every other control message we send: the relay
+	// routes by address, not by session.
+	const size_t len = build_bye(out, sizeof(out), 0, m_local, BYE_QUIT);
+	if (len == 0)
+		return;
+
+	for (unsigned i = 0; i < 5; i++)
+		m_link->send(out, len);
+
+	osd_printf_info("netplay: announced our exit to the session\n");
+}
+
+
+void manager::take_bye(player_t from, u8 reason)
+{
+	(void)reason;
+
+	if ((from < 1) || (from > MAX_PLAYERS))
+		return;
+	if ((m_departed & slot_bit(from)) != 0)
+		return;            // one of the five copies, already counted
+
+	m_departed |= slot_bit(from);
+
+	// Said once here and then by the stall banner for as long as the wait
+	// lasts, because this arrives while the others are still running and the
+	// banner only appears once they are held.
+	if (from == 1)
+		m_machine.popmessage("The host has left the game");
+	else
+		m_machine.popmessage("Player %d has left the game", int(from));
+
+	osd_printf_info("netplay: player %d left the game deliberately\n", int(from));
+}
+
+
+//-------------------------------------------------
 //  chat
 //-------------------------------------------------
 
@@ -2175,9 +2235,23 @@ void manager::wait_for_input()
 					break;
 				}
 			}
-			m_machine.popmessage(
-					"Waiting for player %d - the connection may be down",
-					int(who));
+			// THE OTHER STALL MESSAGE IS NOT THE ONLY ONE. This is the first
+			// thing a held peer sees, and it reaches the screen long before
+			// the periodic banner below - so it has to know about a departure
+			// too, or a player who quit is reported as a dead link.
+			if ((m_departed & slot_bit(who)) != 0)
+			{
+				if (who == 1)
+					m_machine.popmessage("The host has left the game");
+				else
+					m_machine.popmessage("Player %d has left the game", int(who));
+			}
+			else
+			{
+				m_machine.popmessage(
+						"Waiting for player %d - the connection may be down",
+						int(who));
+			}
 			warned_here = true;
 		}
 
@@ -2243,8 +2317,11 @@ const char *manager::missing_text()
 	{
 		if (stamped && ((sl.have & slot_bit(p)) != 0))
 			continue;
+		const char *const tail = ((m_departed & slot_bit(p)) != 0)
+				? " (left the game)" : "";
 		const int n = snprintf(m_missing + used, sizeof(m_missing) - used,
-				"%splayer %d", (used != 0) ? ", " : "", int(p));
+				"%s%s %d%s", (used != 0) ? ", " : "",
+				(p == 1) ? "the host" : "player", int(p), tail);
 		if (n <= 0)
 			break;
 		used += size_t(n);
@@ -2717,6 +2794,12 @@ void manager::on_exit()
 			static_cast<unsigned long long>(m_link ? m_link->sent_count() : 0),
 			static_cast<unsigned long long>(m_link ? m_link->recv_count() : 0),
 			static_cast<unsigned long long>(m_link ? m_link->drop_count() : 0));
+
+	// ANNOUNCED HERE because this is the one place every deliberate exit
+	// passes through - Escape and the confirm, the window close button,
+	// File Exit. A crash or a kill reaches none of them and sends nothing,
+	// which is the honest signal for a link that really did drop.
+	send_bye();
 
 	// Release ownership but DO NOT reset s_instance: this runs as a member of
 	// the object s_instance owns, so resetting would destroy `this` and then

@@ -296,6 +296,8 @@ private:
 	void take_config(u64 digest, u16 flags, const config_rec *recs,
 			unsigned count);
 	void take_nak(u8 about, u8 reason);
+	void send_bye();
+	void take_bye(player_t from, u8 reason);
 	void do_capture();
 	void test_corrupt();
 
@@ -452,6 +454,10 @@ private:
 	unsigned                    m_chat_n;       // total ever added
 	// Enter, tracked by us rather than by input_manager. One edge shared
 	// by opening and sending, so a key held across both cannot do both.
+	// Slots that announced a deliberate exit. The stall banner reads from
+	// this so a wait on somebody who quit does not blame the network.
+	u8                          m_departed;
+
 	bool                        m_enter_prev;
 	bool                        m_enter_edge;
 

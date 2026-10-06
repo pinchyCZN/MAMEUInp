@@ -1104,6 +1104,8 @@ void relay::run()
 
 		case MSG_BYE:
 			{
+				on_input(from, buf, size_t(n));
+
 				const int who = find(from);
 				if (who >= 0)
 				{

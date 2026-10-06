@@ -187,6 +187,7 @@ constexpr size_t JOIN_BYTES = HEADER_BYTES + 32;
 constexpr size_t WELCOME_BYTES = HEADER_BYTES + 8;
 constexpr size_t REFUSE_BYTES = HEADER_BYTES + 4;
 constexpr size_t START_BYTES = HEADER_BYTES + 4;
+constexpr size_t BYE_BYTES = HEADER_BYTES + 4;
 
 size_t build_join(u8 *buf, size_t cap, const join_payload &p);
 bool parse_join(const u8 *buf, size_t len, join_payload &p);
@@ -316,6 +317,15 @@ enum nak_reason : u8
 };
 
 const char *nak_text(u8 reason);
+
+enum bye_reason : u8
+{
+	BYE_QUIT = 0x01            // the player exited on purpose
+};
+
+size_t build_bye(u8 *buf, size_t cap, u16 session, player_t from,
+		u8 reason);
+bool parse_bye(const u8 *buf, size_t len, player_t &from, u8 &reason);
 
 // CONFIG. One record per field whose value is configuration rather than
 // play: DIP switches, config settings and anything analog. 20 bytes
