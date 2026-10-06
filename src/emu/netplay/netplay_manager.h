@@ -223,6 +223,9 @@ private:
 	// screen so a frozen picture has a reason attached to it.
 	static constexpr unsigned STALL_LIMIT = 3000;
 
+	static constexpr unsigned SAY_AFTER_MS = 3000;
+	static constexpr unsigned SAY_EVERY_MS = 1000;
+
 	// Hold this long, in poll iterations of about a millisecond, before
 	// pausing and pumping the display. Short stalls are ordinary jitter and
 	// pausing for them flickers the screen.
@@ -298,6 +301,7 @@ private:
 	void take_nak(u8 about, u8 reason);
 	void send_bye();
 	void take_bye(player_t from, u8 reason);
+	void say_holding(unsigned secs);
 	void do_capture();
 	void test_corrupt();
 
@@ -439,7 +443,6 @@ private:
 	// See frame_end - this is what makes a hole in the stream impossible.
 	frame_t                     m_published;
 	bool                        m_own_hole;     // reported once
-	bool                        m_stall_warned;
 	bool                        m_refused_reported;
 
 	// Chat. osd_ticks drives the expiry, which is safe only because none

@@ -129,7 +129,6 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_unsafe(0)
 	, m_published(0)
 	, m_own_hole(false)
-	, m_stall_warned(false)
 	, m_refused_reported(false)
 	, m_chat_n(0)
 	, m_departed(0)
@@ -2076,7 +2075,6 @@ void manager::wait_for_input()
 	if (!gated && !m_net_paused && complete(m_frame))
 	{
 		m_held_polls = 0;
-		m_stall_warned = false;
 		return;
 	}
 
@@ -2138,6 +2136,13 @@ void manager::wait_for_input()
 	// milliseconds and say nothing; clearing after those would wipe a
 	// message the driver or the UI had just posted.
 	bool warned_here = false;
+
+	// Wall clock for everything the player sees. Set before the loop so a
+	// hold is timed from when it began, not from the first poll that got
+	// around to checking.
+	const osd_ticks_t tps = osd_ticks_per_second();
+	const osd_ticks_t hold_began = osd_ticks();
+	osd_ticks_t say_at = hold_began + ((tps * SAY_AFTER_MS) / 1000);
 
 	u64 since_keepalive = 0;
 
@@ -2215,44 +2220,20 @@ void manager::wait_for_input()
 			send_nak();
 		}
 
-		// SAY SO ON SCREEN. A wait this long is no longer jitter or a lost
-		// packet being re-asked for - the link is down or the peer is gone.
-		// The session still waits rather than inventing input, so without
-		// this the player sees a frozen picture and no reason for it.
-		if (!m_net_paused && !gated_now() && !m_stall_warned
-				&& (m_held_polls >= m_stall_limit))
+		// SAY SO ON SCREEN, and keep saying it. A wait this long is no
+		// longer jitter or a lost packet being re-asked for - the link is
+		// down or the peer is gone. The session still waits rather than
+		// inventing input, so without this the player sees a frozen picture
+		// and no reason for it.
+		if (!m_net_paused && !gated_now() && (osd_ticks() >= say_at))
 		{
-			m_stall_warned = true;
-			player_t who = 0;
-			const slot &sl = at(m_frame);
-			const u8 held = (sl.stamp == m_frame) ? sl.have : 0;
-			for (player_t pl = 1; pl <= MAX_PLAYERS; pl++)
-			{
-				if (((m_need & slot_bit(pl)) != 0)
-						&& ((held & slot_bit(pl)) == 0))
-				{
-					who = pl;
-					break;
-				}
-			}
-			// THE OTHER STALL MESSAGE IS NOT THE ONLY ONE. This is the first
-			// thing a held peer sees, and it reaches the screen long before
-			// the periodic banner below - so it has to know about a departure
-			// too, or a player who quit is reported as a dead link.
-			if ((m_departed & slot_bit(who)) != 0)
-			{
-				if (who == 1)
-					m_machine.popmessage("The host has left the game");
-				else
-					m_machine.popmessage("Player %d has left the game", int(who));
-			}
-			else
-			{
-				m_machine.popmessage(
-						"Waiting for player %d - the connection may be down",
-						int(who));
-			}
+			const osd_ticks_t now = osd_ticks();
+			if (!warned_here)
+				m_waits++;      // once per hold that got as far as speaking
+
+			say_holding(unsigned((now - hold_began) / tps));
 			warned_here = true;
+			say_at = now + ((tps * SAY_EVERY_MS) / 1000);
 		}
 
 		m_held_polls++;
@@ -2270,15 +2251,7 @@ void manager::wait_for_input()
 		// whose packet has not arrived desyncs the session silently and
 		// permanently: this peer runs the frame with nothing pressed while
 		// the owner runs it with whatever they actually pressed. Waiting is
-		// the only honest option, so say what is happening and keep waiting.
-		if (!m_net_paused && ((m_held_polls % 3000) == 0))
-		{
-			m_waits++;
-			m_machine.popmessage("Waiting for %s (frame %u, %llu s)\n\nEscape to quit.",
-					missing_text(), unsigned(m_frame),
-					static_cast<unsigned long long>(m_held_polls / 1000));
-			warned_here = true;
-		}
+		// the only honest option - which is what the message above says.
 
 		if (m_test_pause_hold != 0)
 			test_pause_tick();
@@ -2291,6 +2264,47 @@ void manager::wait_for_input()
 		m_machine.popmessage();  // clear the warning
 
 	m_held_polls = 0;
+}
+
+
+//-------------------------------------------------
+//  say_holding
+//-------------------------------------------------
+
+// ONE PLACE PICKS THE WORDING. There used to be two messages on two
+// different schedules - a one-shot "the connection may be down" and a
+// periodic banner - and they interleaved, so the screen alternated between
+// them and the blank gaps between both.
+void manager::say_holding(unsigned secs)
+{
+	// Who we are actually waiting on, so a departure can be named.
+	player_t who = 0;
+	const slot &sl = at(m_frame);
+	const u8 held = (sl.stamp == m_frame) ? sl.have : 0;
+	for (player_t pl = 1; pl <= MAX_PLAYERS; pl++)
+	{
+		if (((m_need & slot_bit(pl)) != 0) && ((held & slot_bit(pl)) == 0))
+		{
+			who = pl;
+			break;
+		}
+	}
+
+	// A peer that said goodbye is not coming back, so the message says that
+	// rather than suggesting the network is at fault.
+	if ((who != 0) && ((m_departed & slot_bit(who)) != 0))
+	{
+		if (who == 1)
+			m_machine.popmessage(
+					"The host has left the game\n\nEscape to quit.");
+		else
+			m_machine.popmessage(
+					"Player %d has left the game\n\nEscape to quit.", int(who));
+		return;
+	}
+
+	m_machine.popmessage("Waiting for %s (frame %u, %u s)\n\nEscape to quit.",
+			missing_text(), unsigned(m_frame), secs);
 }
 
 
