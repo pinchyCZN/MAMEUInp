@@ -304,7 +304,7 @@ inline void store_pixels(UINT8 *buf, int len)
 
 /* Copied and modified from png.cpp
    logerror doesn't work here... changed to printf */
-static bool png_read_bitmap_gui(util::core_file &mfile, HGLOBAL *phDIB, HPALETTE *pPAL)
+bool png_read_bitmap_gui(util::core_file &mfile, HGLOBAL *phDIB, HPALETTE *pPAL)
 {
 	png_info p;
 	if (p.read_file(mfile) != PNGERR_NONE)

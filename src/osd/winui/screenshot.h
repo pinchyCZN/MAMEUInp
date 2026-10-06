@@ -23,6 +23,9 @@ extern BOOL ScreenShotLoaded(void);
 extern BOOL LoadDIBBG(HGLOBAL *phDIB, HPALETTE *pPal);
 extern HBITMAP DIBToDDB(HDC hDC, HANDLE hDIB, LPMYBITMAPINFO desc);
 
+// NETPLAY: see the comment in screenshot.cpp
+extern bool png_read_bitmap_gui(util::core_file &mfile, HGLOBAL *phDIB, HPALETTE *pPAL);
+
 #if 0
 typedef struct
 {

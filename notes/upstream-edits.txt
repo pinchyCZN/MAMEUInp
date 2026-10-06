@@ -311,9 +311,17 @@ Table of Contents
    |                              | is static and defined far      |
    |                              | below                          |
    +------------------------------+--------------------------------+
-   | scripts/src/osd/winui.lua    | (cont) netplayui.cpp and       |
-   |                              | netplaypick.cpp added to the   |
+   | scripts/src/osd/winui.lua    | (cont) netplayui.cpp,          |
+   |                              | netplaypick.cpp and            |
+   |                              | netplaystate.cpp added to the  |
    |                              | osd_winui sources              |
+   +------------------------------+--------------------------------+
+   | src/osd/winui/screenshot.cpp | png_read_bitmap_gui loses its  |
+   |                              | static, and screenshot.h       |
+   |                              | declares it. The savestate     |
+   |                              | picker decodes thumbnails that |
+   |                              | live in the state directory,   |
+   |                              | where LoadDIB does not look    |
    +------------------------------+--------------------------------+
    | src/osd/winui/winui.cpp      | (cont) three radio buttons     |
    |                              | beside the toolbar search box  |

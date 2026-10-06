@@ -267,6 +267,25 @@ Table of Contents
    own options. That is the path File -> Play and Load State already
    uses.
 
+   LANDMINE: RunMAME IGNORES play_options UNLESS playopts_apply IS 0x57,
+   and reports nothing when it does not. A launch that sets .state and
+   leaves that global alone cold-boots exactly as if no state had been
+   asked for. Every one of MAMEUI own callers sets it; ours must too,
+   and only when there IS a state - the same gate runs the cleanup that
+   rewrites ini/<game>.ini on exit.
+
+   The Saves button lists what is there: name and file date, newest
+   first, with the thumbnail beside it. Newest first rather than by
+   name because the rotation reuses np01 once it wraps, so the highest
+   number is not the most recent.
+
+   ONLY OUR SNAPSHOTS HAVE A THUMBNAIL. take_snapshot writes np01.png
+   beside np01.sta; a state saved by hand with the save-state key has
+   no image, and the preview says so rather than leaving the last one
+   up. The decoder is screenshot.cpp png_read_bitmap_gui, which had to
+   lose its static - the states live in the state directory and LoadDIB
+   only looks where artwork lives.
+
    The slot each player is given is the roster position, and LAUNCH
    carries it. JOIN then names that slot on the wire - protocol.txt
    4.2.2 - so the relay seats everyone where the lobby said.

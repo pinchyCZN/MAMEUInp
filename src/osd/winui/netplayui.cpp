@@ -21,6 +21,7 @@
 #include "mui_opts.h"
 #include "netplayui.h"
 #include "netplaypick.h"
+#include "netplaystate.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -734,6 +735,7 @@ static void game_enable(HWND hDlg)
 			(IsDlgButtonChecked(hDlg, IDC_NPG_SAVESTATES) == BST_CHECKED);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_AUTOSAVE), editable && saves_on);
 	EnableWindow(GetDlgItem(hDlg, IDC_NPG_STATE), editable && saves_on);
+	EnableWindow(GetDlgItem(hDlg, IDC_NPG_VIEWSAVES), editable && saves_on);
 }
 
 
@@ -797,48 +799,6 @@ static bool rom_gate(HWND hDlg, const std::string &driver, int &idx)
 //  starting from a savestate
 //-------------------------------------------------
 
-// MAME composes <state_directory>/<statename>/<name>.sta, where statename is
-// the state_name option with %g standing for the system - machine.cpp
-// get_statename. Only %g is expanded here; the other code is %d_ for image
-// devices, which no arcade driver produces.
-static std::string state_folder(int drv)
-{
-	std::string tpl = MameUIGlobal().state_name();
-	if (tpl.empty())
-		tpl = "%g";
-
-	const size_t dot = tpl.find_last_of('.');
-	if (dot != std::string::npos)
-		tpl.erase(dot);
-
-	const size_t g = tpl.find("%g");
-	if (g != std::string::npos)
-		tpl.replace(g, 2, driver_list::driver(drv).name);
-
-	// Anything still unexpanded needs a running machine to resolve. The
-	// default is the system name, and that is where a state of ours lives.
-	if (tpl.find('%') != std::string::npos)
-		tpl = driver_list::driver(drv).name;
-
-	return tpl;
-}
-
-
-static bool state_exists(int drv, const char *name)
-{
-	if ((drv < 0) || (name == nullptr) || (name[0] == 0))
-		return false;
-
-	std::string rel = state_folder(drv);
-	rel += PATH_SEPARATOR;
-	rel += name;
-	rel += ".sta";
-
-	emu_file f(MameUIGlobal().state_directory(), OPEN_FLAG_READ);
-	return f.open(rel) == osd_file::error::NONE;
-}
-
-
 // Checked before CREATE and again before START, because the box can be
 // edited in between. A guest is never asked: it is handed the host's machine
 // by the existing state push and loads no file of its own.
@@ -857,7 +817,7 @@ static bool state_gate(HWND hDlg, int drv)
 		return false;
 	}
 
-	if (!state_exists(drv, name))
+	if (!NetplayStateExists(drv, name))
 	{
 		std::string why("No state ");
 		why += name;
@@ -1257,6 +1217,24 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 					SetDlgItemTextA(hDlg, IDC_NPG_DRIVER, driver_list::driver(got).name);
 					show_fullname(hDlg, driver_list::driver(got).name);
 				}
+				return true;
+			}
+
+		case IDC_NPG_VIEWSAVES:
+			{
+				char drv[32];
+				GetDlgItemTextA(hDlg, IDC_NPG_DRIVER, drv, sizeof(drv));
+				const int idx = (drv[0] != 0) ? driver_list::find(drv) : -1;
+				if (idx < 0)
+				{
+					game_result(hDlg, "Pick a system first - the states"
+							" listed are that system's own.");
+					return true;
+				}
+
+				char picked[64];
+				if (NetplayPickState(hDlg, idx, picked, sizeof(picked)))
+					SetDlgItemTextA(hDlg, IDC_NPG_STATE, picked);
 				return true;
 			}
 
