@@ -4010,8 +4010,17 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 
 			// NETPLAY: the state to start from is a MAME option, not one of
 			// ours, so it travels here rather than in the environment.
+			//
+			// RunMAME IGNORES playopts ENTIRELY WITHOUT THE 0x57 GATE, and
+			// says nothing when it does. Set only when there is a state to
+			// carry: the same gate runs the cleanup that rewrites
+			// ini/<game>.ini on exit, and an ordinary session should not
+			// touch it.
 			if (cfg.state[0] != 0)
+			{
 				playopts.state = cfg.state;
+				playopts_apply = 0x57;
+			}
 
 			NetplayApply(cfg);
 			MamePlayGameWithOptions(cfg.game, &playopts);
