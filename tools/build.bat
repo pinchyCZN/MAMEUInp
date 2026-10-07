@@ -61,19 +61,28 @@ rem build treats as up to date, so the damage outlives the collision.
 rem
 rem This also catches the user building in the IDE, which is the case that
 rem matters: devenv spawns msbuild.exe and cl.exe like anything else.
-tasklist /FI "IMAGENAME eq msbuild.exe" 2>nul | find /I "msbuild.exe" >nul
-if not errorlevel 1 (
-    echo build: REFUSING - msbuild.exe is already running.
-    echo        Another build is in progress, possibly in Visual Studio.
-    echo        Wait for it to finish; do not run two builds over one obj tree.
-    exit /b 1
-)
-tasklist /FI "IMAGENAME eq cl.exe" 2>nul | find /I "cl.exe" >nul
-if not errorlevel 1 (
-    echo build: REFUSING - cl.exe is already running.
-    echo        Another build is in progress. Wait for it to finish.
-    exit /b 1
-)
+rem FULL PATH TO find.exe ON PURPOSE. A bare "find" picks up Git Bash's
+rem find(1) when this is launched from that shell, which takes /I as a path,
+rem prints an error and leaves ERRORLEVEL saying nothing useful - so the
+rem guard silently passed and two builds ran over one obj tree anyway.
+set FIND=%SystemRoot%\System32\find.exe
+
+rem cl.exe ONLY, NOT msbuild.exe. Visual Studio keeps MSBuild.exe node
+rem processes alive and idle long after a build finishes (node reuse), so
+rem msbuild.exe means "the IDE is open", not "a build is running" - testing
+rem it refuses every build while VS is open, which is useless. A live cl.exe
+rem is the thing that actually says somebody is compiling.
+tasklist /FI "IMAGENAME eq cl.exe" 2>nul | "%FIND%" /I "cl.exe" >nul
+if not errorlevel 1 goto :busy_cl
+goto :not_busy
+
+:busy_cl
+echo build: REFUSING - cl.exe is already running.
+echo        Another build is in progress, possibly in Visual Studio.
+echo        Wait for it to finish; do not run two builds over one obj tree.
+exit /b 1
+
+:not_busy
 
 call "%VCVARS%" x86 -vcvars_ver=14.13 >nul
 if errorlevel 1 (
@@ -95,14 +104,21 @@ rem
 rem ForceImportAfterCppTargets needs an absolute path.
 set CAPS=/m:%NP_JOBS% /p:ForceImportAfterCppTargets=%CD%\tools\cap_mp.props
 
-if "%PROJECT%"=="" (
-    echo build: %CONFIG% Win32, at most %NP_JOBS% compiler process(es)
-    msbuild "%SLN%" /p:Configuration=%CONFIG% /p:Platform=Win32 %CAPS% /v:minimal /nologo
-) else (
-    echo build: %CONFIG% Win32 project %PROJECT%, at most %NP_JOBS% compiler process(es)
-    msbuild "%SLN%" /p:Configuration=%CONFIG% /p:Platform=Win32 /t:%PROJECT% %CAPS% /v:minimal /nologo
-)
+rem GOTO RATHER THAN IF/ELSE BLOCKS, and no parentheses in any echo inside
+rem one. An unescaped ")" in "process(es)" closed the if-block early, so the
+rem else-branch ran too and a second msbuild started with an empty /t: -
+rem which failed with MSB1004 after the real build had already succeeded.
+if not "%PROJECT%"=="" goto :one_project
 
+echo build: %CONFIG% Win32, at most %NP_JOBS% compiler process
+msbuild "%SLN%" /p:Configuration=%CONFIG% /p:Platform=Win32 %CAPS% /v:minimal /nologo
+goto :done
+
+:one_project
+echo build: %CONFIG% Win32 project %PROJECT%, at most %NP_JOBS% compiler process
+msbuild "%SLN%" /p:Configuration=%CONFIG% /p:Platform=Win32 /t:%PROJECT% %CAPS% /v:minimal /nologo
+
+:done
 set RC=%ERRORLEVEL%
 echo build: exit %RC%
 exit /b %RC%

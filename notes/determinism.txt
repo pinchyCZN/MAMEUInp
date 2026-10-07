@@ -94,9 +94,24 @@ Table of Contents
    [verified: ioport.cpp, record_init / playback_init /
    ioport_manager::initialize]
 
-   Our server chooses the session base time and broadcasts it at join.
-   The mechanism to apply it already exists; we are substituting a
-   network source for the .inp header.
+   THE TIMEZONE IS PART OF THE HAZARD. system_time::set fills
+   local_time from localtime(&t) and utc_time from gmtime(&t), and the
+   RTC devices seed from local_time - so two peers holding the SAME
+   base time but sitting in different zones still start with different
+   hours. [verified: machine.cpp, system_time::set]
+
+   WE PIN THE CLOCK RATHER THAN SYNCHRONISE IT. An earlier design had
+   the server choose a base time and broadcast it at join, mirroring
+   what .inp does with its header. That is more machinery than the
+   problem deserves: nothing has to be negotiated for peers to agree on
+   a constant. netplay::manager::pin_rtc_time sets the clock to
+   1999-01-01 00:00:00 UTC and forces TZ to UTC0, from
+   running_machine::start, immediately after the playback override and
+   before any device starts. Nothing travels on the wire, the server
+   knows nothing about it, and the protocol is unchanged.
+
+   The date is cosmetic - these are arcade machines from the nineties -
+   and no measured driver reads the clock for anything a player sees.
 
    Devices that consume host date/time, for reference - these are the
    drivers to be careful with, not a list of problems:
@@ -107,6 +122,16 @@ Table of Contents
        machine/dp8573.cpp      machine/mm58274c.cpp
        machine/mccs1850.cpp    machine/smpc.cpp
        machine/laserdsc.cpp    bus/snes/spc7110.cpp
+       machine/timekpr.cpp
+
+   THIS LIST IS NOT A SURVEY AND MUST NOT BE READ AS ONE. timekpr.cpp
+   was missing from it, which is why opwolf3 - an MK48T08 TimeKeeper -
+   was never flagged. Two peers on it diverged at frame 0, their saved
+   NVRAM differing in exactly one byte: the seconds register at 0x1FF9,
+   0x18 against 0x25, which is the gap between the two launches.
+   Pinning the clock took the same pairing to 25545 frames with zero
+   divergence. [verified] The reliable test is not this list but a
+   two-peer hash comparison on the driver in question.
 
    [verified: grep for system_time across src/devices]
 

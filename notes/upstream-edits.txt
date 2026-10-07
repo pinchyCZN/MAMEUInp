@@ -262,7 +262,14 @@ Table of Contents
    |                              | happen there - determinism.txt |
    |                              | 6.1. The second call site is   |
    |                              | EMSCRIPTEN-only and is left    |
-   |                              | alone.                         |
+   |                              | alone. Plus                    |
+   |                              | netplay::manager::pin_rtc_time |
+   |                              | in running_machine::start,     |
+   |                              | right after the playback       |
+   |                              | base-time override and before  |
+   |                              | any device starts - every RTC  |
+   |                              | device seeds there.            |
+   |                              | determinism.txt 2.2            |
    +------------------------------+--------------------------------+
    | src/emu/video.cpp            | netplay::manager::idle_update, |
    |                              | so a held session still pumps  |

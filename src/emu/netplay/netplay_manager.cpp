@@ -1889,6 +1889,38 @@ bool manager::chat_begin(running_machine &machine)
 
 
 //-------------------------------------------------
+//  pin_rtc_time - see the header
+//-------------------------------------------------
+
+// 1999-01-01 00:00:00 UTC.
+static constexpr long long RTC_EPOCH = 915148800LL;
+
+bool manager::pin_rtc_time(time_t &base)
+{
+	if (!configured())
+		return false;
+
+	// THE TIMEZONE IS PART OF THE SAME HAZARD, and a fixed date alone
+	// does not cover it. system_time::set fills local_time from
+	// localtime(&t), and timekeeper_device seeds its registers from
+	// local_time - so two peers handed the SAME constant still start with
+	// different hours if they sit in different zones. Forcing UTC makes
+	// localtime agree with gmtime on every machine.
+#if defined(_WIN32)
+	_putenv("TZ=UTC0");
+	_tzset();
+#else
+	setenv("TZ", "UTC0", 1);
+	tzset();
+#endif
+
+	base = time_t(RTC_EPOCH);
+	osd_printf_info("netplay: emulated clock pinned to 1999-01-01 00:00:00 UTC\n");
+	return true;
+}
+
+
+//-------------------------------------------------
 //  sample_ui_keys / enter_edge
 //-------------------------------------------------
 

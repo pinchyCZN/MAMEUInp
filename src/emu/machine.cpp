@@ -218,6 +218,8 @@ void running_machine::start()
 	if (newbase != 0)
 		m_base_time = newbase;
 
+	netplay::manager::pin_rtc_time(m_base_time);
+
 	// initialize the streams engine before the sound devices start
 	m_sound = std::make_unique<sound_manager>(*this);
 

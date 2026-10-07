@@ -73,6 +73,10 @@ public:
 	// Whether a session is CONFIGURED, which is true before one is open.
 	static bool configured();
 
+	// PIN THE EMULATED CLOCK, and it has to happen before any device
+	// starts.
+	static bool pin_rtc_time(time_t &base);
+
 	// The frame whose input was just applied, for stamping diagnostics.
 	// False when no session owns this machine, leaving the caller to use
 	// its own clock. Callers run after frame_end, hence m_frame - 1.

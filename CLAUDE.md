@@ -368,10 +368,17 @@ damage is worse than the failure - **a `cl.exe` killed mid-write leaves a
 truncated `.obj` that the next build treats as up to date**, so a later
 link fails or, worse, succeeds against stale code.
 
-`tools\build.bat` refuses to start if `msbuild.exe` or `cl.exe` is already
-running, which also covers the user building in the IDE. If a build was
-ever killed part-way, say so and recommend a `Rebuild` of the affected
-projects rather than trusting the obj tree.
+`tools\build.bat` refuses to start if **`cl.exe`** is running, which also
+covers the user building in the IDE.
+
+**It deliberately does NOT test `msbuild.exe`.** Visual Studio keeps MSBuild
+node processes alive and idle long after a build finishes (node reuse), so
+that test means "the IDE is open", not "a build is running" - it refused
+every build while VS was merely open. A live `cl.exe` is what actually says
+somebody is compiling.
+
+If a build was ever killed part-way, say so and recommend a `Rebuild` of the
+affected projects rather than trusting the obj tree.
 
 **Before starting any build, check whether the user is already building.**
 A rebuild triggered by an `ioport.h` change touches every driver and runs
