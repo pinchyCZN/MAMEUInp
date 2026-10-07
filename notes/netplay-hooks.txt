@@ -386,15 +386,31 @@ Table of Contents
    -seconds_to_run under 300, the empty driver, or the debugger being
    enabled. [verified]
 
-   So a netplay session has to force show_warnings false itself. There
-   is precedent on that exact line: show_mandatory_fileman is already
-   hardcoded false with a "//true; //MESSUI" comment, i.e. Robbbert
-   edited it for MAMEUI. [verified]
+   So a netplay session forces show_warnings false itself, which it
+   now does on the line below the gameinfo gate - one contiguous
+   NETPLAY block covering both. There is precedent on that exact line:
+   show_mandatory_fileman is already hardcoded false with a
+   "//true; //MESSUI" comment, i.e. Robbbert edited it for MAMEUI.
+   [verified]
 
-   Suppress both, and not only for convenience. The screens are modal
-   handlers that consume frames while the machine schedules, so the
-   frame at which real input starts flowing otherwise depends on when
-   each player happens to press a key.
+   Both are suppressed, and not only for convenience. The screens are
+   modal handlers that consume frames while the machine schedules, so
+   the frame at which real input starts flowing would otherwise depend
+   on when each player happens to press a key.
+
+   ONE GATE COVERS THREE MESSAGES. state 0 is a single message box
+   whose text is machine_info::warnings_string() and whose colour is
+   warnings_color() - yellow for "There are known problems with this
+   machine", red for "One or more ROMs/CHDs ... have not been
+   correctly dumped" or unemulated protection. They look like separate
+   screens and are not. [verified]
+
+   SUPPRESSING THE RED ONE HIDES A DETERMINISM PROBLEM, not just a
+   cosmetic warning: two peers running different dumps of the SAME
+   driver desync, and the handshake does not catch it - the driver
+   name matches and a bad dump produces an identical save-state
+   layout. The warning was the only hint. [open] A ROM digest belongs
+   in the join beside the NVRAM one, protocol.txt 4.2.
 
 5.2.  NVRAM that needs a boot to initialise
 

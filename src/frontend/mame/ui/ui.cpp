@@ -291,9 +291,17 @@ void mame_ui_manager::display_startup_screens(bool first_time)
 {
 	const int maxstate = 3;
 	int str = machine().options().seconds_to_run();
+	// NETPLAY: a modal screen waiting for a keypress holds this machine
+	// while the other peers run, which they see as a stall rather than as
+	// somebody reading a warning. show_warnings covers BOTH the yellow
+	// "known problems with this machine" and the red "not correctly
+	// dumped" - they are one message box whose colour varies
+	// (ui/info.cpp warnings_string / warnings_color).
+	// notes/netplay-hooks.txt 5.1.
 	bool show_gameinfo = !machine().options().skip_gameinfo()
 			&& !netplay::manager::configured();
-	bool show_warnings = true, show_mandatory_fileman = false; //true; //MESSUI
+	bool show_warnings = !netplay::manager::configured(),
+			show_mandatory_fileman = false; //true; //MESSUI
 
 	// disable everything if we are using -str for 300 or fewer seconds, or if we're the empty driver,
 	// or if we are debugging

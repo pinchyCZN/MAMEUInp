@@ -301,7 +301,13 @@ Table of Contents
    |                              | dismisses that screen, and     |
    |                              | skip_gameinfo is per-install   |
    |                              | so it cannot be relied on at   |
-   |                              | the far end                    |
+   |                              | the far end. show_warnings is  |
+   |                              | gated on the next line, same   |
+   |                              | block - it covers BOTH the     |
+   |                              | yellow "known problems" and    |
+   |                              | the red "not correctly dumped" |
+   |                              | screens, which are one message |
+   |                              | box with two colours           |
    +------------------------------+--------------------------------+
    | src/osd/windows/window.cpp   | window title carries           |
    |                              | NETPLAY_TAG                    |
