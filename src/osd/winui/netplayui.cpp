@@ -67,7 +67,7 @@ static void defaults(netplay_launch &c)
 	c.port = 7000;
 	c.players = 2;
 	c.slot = 1;
-	c.delay = 6;
+	c.delay = 8;
 	c.batch = 1;
 	c.savestates = true;
 	c.send_config = true;
@@ -967,7 +967,7 @@ static bool game_launch(HWND hDlg, const std::string &arg)
 	c.game = idx;
 	c.players = kv(arg, "players", 2);
 	c.slot = kv(arg, "slot", 1);
-	c.delay = kv(arg, "delay", 6);
+	c.delay = kv(arg, "delay", 8);
 	c.batch = kv(arg, "batch", 1);
 	c.savestates = (kv(arg, "savestates", 1) != 0);
 	c.send_config = (kv(arg, "config", 1) != 0);
@@ -1049,7 +1049,7 @@ static void lobby_handle(HWND hDlg, const std::string &line)
 		s_g_active = true;
 		s_g_driver = arg.substr(0, sp2);
 		s_g_players = kv(arg, "players", 2);
-		s_g_delay = kv(arg, "delay", 6);
+		s_g_delay = kv(arg, "delay", 8);
 		s_g_batch = kv(arg, "batch", 1);
 		s_g_savestates = (kv(arg, "savestates", 1) != 0);
 		s_g_config = (kv(arg, "config", 1) != 0);
