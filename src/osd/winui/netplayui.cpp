@@ -1166,6 +1166,55 @@ static std::string media_filter(int drv, std::string &slotdesc)
 }
 
 
+// This machine's ROM directories, for telling somebody where the file has
+// to go. The option is a ";"-separated list and MAME searches all of it.
+static std::string media_roots(void)
+{
+	windows_options o;
+	load_options(o, OPTIONS_GLOBAL, -1, 0);
+
+	std::string out(o.media_path());
+	for (size_t i = 0; i < out.size(); i++)
+		if (out[i] == ';')
+			out[i] = '\n';
+	return out;
+}
+
+
+// SAYS WHETHER THE PICK WILL ACTUALLY LOAD, as it is picked. The browse
+// button can reach anywhere on the machine, but only a file sitting in a
+// ROM directory can be found again - by us here, and by every other
+// player from the bare name. Catching it now beats a fatal
+// "File not found" after everybody has joined.
+static void media_note(HWND hDlg)
+{
+	char name[128];
+	GetDlgItemTextA(hDlg, IDC_NPM_FILE, name, sizeof(name));
+
+	if (name[0] == 0)
+	{
+		SetDlgItemTextA(hDlg, IDC_NPM_NOTE,
+				"No media: the system will boot with an empty slot, which "
+				"is what the main window does too.");
+		return;
+	}
+
+	const std::string full = media_find(name);
+	if (!full.empty())
+	{
+		SetDlgItemTextA(hDlg, IDC_NPM_NOTE, ("Found: " + full
+				+ "\r\n\r\nEvery player needs this file under the same name "
+				"in one of their own ROM directories.").c_str());
+		return;
+	}
+
+	SetDlgItemTextA(hDlg, IDC_NPM_NOTE, (std::string(
+			"NOT in any of your ROM directories, so it will not load.\r\n"
+			"Copy it into one of these, or add its folder to rompath:\r\n\r\n")
+			+ crlf_of(media_roots())).c_str());
+}
+
+
 // The lobby only ever stores and sends a BARE NAME, so a browse that
 // lands anywhere still contributes just the file name.
 static void media_browse(HWND hDlg, int drv)
@@ -1203,6 +1252,7 @@ static void media_browse(HWND hDlg, int drv)
 		base = base2;
 
 	SetDlgItemTextA(hDlg, IDC_NPM_FILE, (base != nullptr) ? base + 1 : file);
+	media_note(hDlg);
 }
 
 
@@ -1227,11 +1277,7 @@ static INT_PTR CALLBACK media_proc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
 			SendDlgItemMessage(hDlg, IDC_NPM_FILE, EM_SETLIMITTEXT,
 					sizeof(s_cfg.cart) - 1, 0);
 
-			SetDlgItemTextA(hDlg, IDC_NPM_NOTE,
-					"The NAME only, not a path - every player resolves it "
-					"against their own ROM directories, so the file must sit "
-					"in one of them and be named the same on every machine. "
-					"Leave it empty to boot the system with no media.");
+			media_note(hDlg);
 			return true;
 		}
 
@@ -1240,6 +1286,12 @@ static INT_PTR CALLBACK media_proc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
 		{
 		case IDC_NPM_BROWSE:
 			media_browse(hDlg, s_media_drv);
+			return true;
+
+		case IDC_NPM_FILE:
+			// Typed or pasted, not just browsed.
+			if (HIWORD(wp) == EN_CHANGE)
+				media_note(hDlg);
 			return true;
 
 		case IDOK:
@@ -1254,8 +1306,20 @@ static INT_PTR CALLBACK media_proc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
 				if ((b2 != nullptr) && ((b == nullptr) || (b2 > b)))
 					b = b2;
 
-				std::strncpy(s_cfg.cart, (b != nullptr) ? b + 1 : buf,
-						sizeof(s_cfg.cart) - 1);
+				const char *const bare = (b != nullptr) ? b + 1 : buf;
+
+				if ((bare[0] != 0) && media_find(bare).empty())
+				{
+					const std::string why = std::string(bare)
+							+ " is not in any of your ROM directories, so it "
+							"will not load - and the other players look it "
+							"up the same way.\r\n\r\nKeep it anyway?";
+					if (MessageBoxA(hDlg, why.c_str(), "Netplay",
+							MB_YESNO | MB_ICONWARNING) != IDYES)
+						return true;
+				}
+
+				std::strncpy(s_cfg.cart, bare, sizeof(s_cfg.cart) - 1);
 				s_cfg.cart[sizeof(s_cfg.cart) - 1] = 0;
 				save_cfg(s_cfg);
 				EndDialog(hDlg, 1);
@@ -1336,10 +1400,19 @@ static bool media_gate(HWND hDlg, int drv)
 
 	if (s_cfg.cart[0] != 0)
 	{
-		// SAY WHAT IS MOUNTED. The audit result alone says "ROM set is
-		// good", which is about the BIOS and tells the host nothing
-		// about the cart they are about to make everybody load.
-		game_result_add(hDlg, std::string("Media: ") + s_cfg.cart);
+		const std::string full = media_find(s_cfg.cart);
+		if (!full.empty())
+		{
+			game_result_add(hDlg, std::string("Media: ") + s_cfg.cart
+					+ "\n" + full);
+			return true;
+		}
+
+		game_result_add(hDlg, std::string("Media: ") + s_cfg.cart
+				+ "\n\nWARNING: not in any of your ROM directories, so it "
+				"will not load - and the other players look it up the same "
+				"way.\n\nCopy it into one of these, or add its folder to "
+				"rompath:\n\n" + media_roots());
 		return true;
 	}
 
@@ -1408,8 +1481,8 @@ static bool media_join_gate(HWND hDlg, int idx)
 	if (mine.empty())
 	{
 		game_result(hDlg, "You do not have " + s_g_cart + ".\n\n"
-				"Put it in one of your ROM directories under that exact "
-				"name. MAME searches every rompath entry.");
+				"Copy it under that exact name into one of these, or add "
+				"its folder to rompath:\n\n" + media_roots());
 		return false;
 	}
 
