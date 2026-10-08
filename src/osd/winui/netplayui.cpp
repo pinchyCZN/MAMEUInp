@@ -118,6 +118,7 @@ static std::string unhex(const std::string &in)
 static void defaults(netplay_launch &c)
 {
 	std::strcpy(c.host, "127.0.0.1");
+	c.host2[0] = 0;
 	c.port = 7000;
 	c.players = 2;
 	c.slot = 1;
@@ -150,6 +151,11 @@ static void load_cfg(netplay_launch &c)
 
 		if (!std::strcmp(key, "host"))
 			std::strncpy(c.host, val, sizeof(c.host) - 1);
+		else if (!std::strcmp(key, "host2"))
+		{
+			std::strncpy(c.host2, val, sizeof(c.host2) - 1);
+			c.host2[sizeof(c.host2) - 1] = 0;
+		}
 		else if (!std::strcmp(key, "port"))
 			c.port = unsigned(std::atoi(val));
 		else if (!std::strcmp(key, "players"))
@@ -186,6 +192,8 @@ static void save_cfg(const netplay_launch &c)
 		return;
 
 	std::fprintf(f, "host %s\n", c.host);
+	if (c.host2[0] != 0)
+		std::fprintf(f, "host2 %s\n", c.host2);
 	std::fprintf(f, "port %u\n", c.port);
 	std::fprintf(f, "players %u\n", c.players);
 	std::fprintf(f, "slot %u\n", c.slot);
@@ -1792,13 +1800,32 @@ static void lobby_send_chat(HWND hDlg)
 }
 
 
+// THE SERVER BOX IS AN MRU OF TWO AND STORES NO SELECTION INDEX.
+// Connecting promotes the chosen address to slot 1, so slot 1 is by
+// definition whatever was last connected to and the dialog always opens
+// on it.
+static void host_fill(HWND hDlg)
+{
+	SendDlgItemMessage(hDlg, IDC_NPL_HOST, CB_RESETCONTENT, 0, 0);
+	SendDlgItemMessageA(hDlg, IDC_NPL_HOST, CB_ADDSTRING, 0,
+			(LPARAM)s_cfg.host);
+	if ((s_cfg.host2[0] != 0) && std::strcmp(s_cfg.host2, s_cfg.host))
+		SendDlgItemMessageA(hDlg, IDC_NPL_HOST, CB_ADDSTRING, 0,
+				(LPARAM)s_cfg.host2);
+
+	// Not CB_SETCURSEL. The connect reads the edit text, which has to be
+	// right even when host is not one of the list items.
+	SetDlgItemTextA(hDlg, IDC_NPL_HOST, s_cfg.host);
+}
+
+
 static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	switch (msg)
 	{
 	case WM_INITDIALOG:
 		load_cfg(s_cfg);
-		SetDlgItemTextA(hDlg, IDC_NPL_HOST, s_cfg.host);
+		host_fill(hDlg);
 		SetDlgItemInt(hDlg, IDC_NPL_PORT, s_cfg.port, false);
 		SetDlgItemTextA(hDlg, IDC_NPL_NAME, s_name.empty() ? "player" : s_name.c_str());
 		SendDlgItemMessage(hDlg, IDC_NPL_SAY, EM_SETLIMITTEXT, 200, 0);
@@ -1840,9 +1867,18 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 			if (s_state == LOBBY_IDLE)
 			{
 				// Remember the address even if the connect fails.
-				GetDlgItemTextA(hDlg, IDC_NPL_HOST, s_cfg.host, sizeof(s_cfg.host));
+				char typed[64];
+				GetDlgItemTextA(hDlg, IDC_NPL_HOST, typed, sizeof(typed));
+
+				if (std::strcmp(typed, s_cfg.host) != 0)
+				{
+					std::strcpy(s_cfg.host2, s_cfg.host);
+					std::strcpy(s_cfg.host, typed);
+				}
+
 				s_cfg.port = GetDlgItemInt(hDlg, IDC_NPL_PORT, nullptr, false);
 				save_cfg(s_cfg);
+				host_fill(hDlg);
 				lobby_open(hDlg);
 			}
 			else

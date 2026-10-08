@@ -13,6 +13,7 @@ struct netplay_launch
 {
 	int         game;          // driver index, -1 if none
 	char        host[64];
+	char        host2[64];   // MRU slot 2; see host_fill in netplayui.cpp
 	unsigned    port;
 	unsigned    players;
 	unsigned    slot;
