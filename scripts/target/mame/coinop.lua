@@ -163,6 +163,7 @@ SOUNDS["YMF278B"] = true
 SOUNDS["YMZ280B"] = true
 SOUNDS["SN76477"] = true
 SOUNDS["SN76496"] = true
+SOUNDS["GB_SOUND"] = true
 SOUNDS["POKEY"] = true
 SOUNDS["TIA"] = true
 SOUNDS["NES_APU"] = true
@@ -280,6 +281,7 @@ SOUNDS["LC7535"] = true
 --------------------------------------------------
 
 VIDEOS["SEGA315_5124"] = true
+VIDEOS["GB_LCD"] = true
 VIDEOS["SEGA315_5313"] = true
 VIDEOS["BUFSPRITE"] = true
 --VIDEOS["CDP1861"] = true
@@ -700,7 +702,7 @@ BUSES["CENTRONICS"] = true
 --BUSES["ECONET"] = true
 --BUSES["EP64"] = true
 --BUSES["EPSON_SIO"] = true
---BUSES["GAMEBOY"] = true
+BUSES["GAMEBOY"] = true
 BUSES["GAMEGEAR"] = true
 --BUSES["GBA"] = true
 BUSES["GENERIC"] = true
@@ -714,7 +716,7 @@ BUSES["ISA"] = true
 --BUSES["LPCI"] = true
 --BUSES["MACPDS"] = true
 BUSES["MIDI"] = true
---BUSES["MEGADRIVE"] = true
+BUSES["MEGADRIVE"] = true
 --BUSES["MSX_SLOT"] = true
 BUSES["NEOGEO"] = true
 BUSES["NEOGEO_CTRL"] = true
@@ -740,7 +742,8 @@ BUSES["SG1000_EXP"] = true
 BUSES["SGIKBD"] = true
 BUSES["SMS_CTRL"] = true
 BUSES["SMS_EXP"] = true
---BUSES["SNES"] = true
+BUSES["SNES"] = true
+BUSES["SNES_CTRL"] = true
 --BUSES["SPC1000"] = true
 BUSES["SUNKBD"] = true
 --BUSES["TI99PEB"] = true
@@ -2998,6 +3001,10 @@ files {
 	MAME_DIR .. "src/mame/audio/n8080.cpp",
 	MAME_DIR .. "src/mame/video/n8080.cpp",
 	MAME_DIR .. "src/mame/drivers/nss.cpp",
+	MAME_DIR .. "src/mame/drivers/snes.cpp",
+	MAME_DIR .. "src/mame/includes/snes.h",
+	MAME_DIR .. "src/mame/machine/snescx4.cpp",
+	MAME_DIR .. "src/mame/machine/snescx4.h",
 	MAME_DIR .. "src/mame/machine/snes.cpp",
 	MAME_DIR .. "src/mame/audio/snes_snd.cpp",
 	MAME_DIR .. "src/mame/audio/snes_snd.h",
@@ -3256,6 +3263,13 @@ files {
 	MAME_DIR .. "src/mame/includes/megadriv_acbl.h",
 	MAME_DIR .. "src/mame/drivers/megaplay.cpp",
 	MAME_DIR .. "src/mame/drivers/megatech.cpp",
+	MAME_DIR .. "src/mame/drivers/megadriv.cpp",
+	MAME_DIR .. "src/mame/machine/mega32x.cpp",
+	MAME_DIR .. "src/mame/machine/mega32x.h",
+	MAME_DIR .. "src/mame/machine/megacd.cpp",
+	MAME_DIR .. "src/mame/machine/megacd.h",
+	MAME_DIR .. "src/mame/machine/megacdcd.cpp",
+	MAME_DIR .. "src/mame/machine/megacdcd.h",
 	MAME_DIR .. "src/mame/drivers/calcune.cpp",
 	MAME_DIR .. "src/mame/drivers/model1.cpp",
 	MAME_DIR .. "src/mame/includes/model1.h",

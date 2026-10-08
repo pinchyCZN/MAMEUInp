@@ -21,6 +21,7 @@ Table of Contents
    3. Identifying the cart
       3.1. The lobby carries it; UDP does not change
       3.2. Why a hash as well as a name
+      3.3. Saturn is a different shape
    4. Snags
    5. Open questions
 
@@ -133,6 +134,31 @@ Table of Contents
        name not found                "you need shinobi.bin"
        name found, hash differs      "your copy of shinobi.bin differs"
 
+3.3.  Saturn is a different shape
+
+   Saturn needs no new source at all. saturn.cpp is ALREADY in
+   coinop.flt and ALREADY compiled - ST-V needs the shared Saturn
+   machine and video code - and upstream suppresses the five console
+   systems by NAME in arcade.flt, which gen_coinop.py copies through:
+
+       -saturn   -saturnjp   -saturneu   -vsaturn   -hisaturn
+
+   Removing those five lines is the whole of it, and it belongs in the
+   generator rather than a hand edit, since the files are generated.
+   [verified]
+
+   Two reasons it is still the LAST of the three to do:
+
+   o all five are MACHINE_NOT_WORKING at 0.210. Saturn console
+     emulation was not functional at this tag.
+   o Saturn games are CD, not cart: a cdrom slot and a "cd_list"
+     software list, so -cdrom FILE rather than -cart FILE.
+     bus/saturn is also not compiled, and saturn.cpp declares
+     SATURN_CART_SLOT for the expansion slot.
+
+   Mega Drive and SNES are both working drivers and both cart-based,
+   so they come first.
+
 4.  Snags
 
    These are the parts that are not assembly.
@@ -154,13 +180,29 @@ Table of Contents
    The host advertising a hash and the server refusing a mismatch is
    what closes it.
 
-   THE IMAGE OPTION MAY NOT BE A PLAIN set_value. RunMAME sets options
-   with emu_options::set_value at OPTION_PRIORITY_CMDLINE, but image
-   device options like cart are registered when the system is known
-   rather than statically. MESSUI reaches them through swconfig.cpp and
-   software_config. Whether "one more set_value" is enough is NOT
-   verified, and it is the join between the two halves of this work.
-   Check it before scoping the UI. [open]
+   THE IMAGE OPTION IS A PLAIN set_value AFTER ALL - settled, no longer
+   a risk. RunMAME sets OPTION_SYSTEMNAME on its own windows_options
+   before the playopts block, and OPTION_SYSTEMNAME is a CUSTOM option
+   entry whose internal_set_value calls emu_options::set_system_name,
+   which calls update_slot_and_image_options. So the image options exist
+   by the time the playopts lines run, and a cart is one more line
+   beside the existing OPTION_STATE one. [verified: emuopts.cpp
+   system_name_option_entry, winui.cpp RunMAME]
+
+   SetSystemName is a red herring: it ignores the windows_options passed
+   to it and sets the name on a different object. The set_value line is
+   what does the work.
+
+   Measured on the command line, which exercises the same registration:
+
+       aof                        exit 0   baseline
+       aof -notanoption foo       exit 6   unknown option, rejected
+       aof -memcard missing.neo   exit 4   option TAKEN, file not found
+       aof -memcard mc.neo        exit 0   option taken, file loaded
+
+   Three distinct codes, so the option is registered rather than being
+   swallowed. 1115 systems in the coinop build already expose a media
+   slot. [verified]
 
    CARTRIDGE SAVE RAM IS PERSISTENT PER-PEER STATE, the same class of
    problem as the NVRAM that desynced opwolf3, and far more common on

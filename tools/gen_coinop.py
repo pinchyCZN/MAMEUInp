@@ -45,6 +45,50 @@ KEEP_MIXED = {"itech8.cpp", "taito_b.cpp", "segac2.cpp",
 HXX_ONLY = {"bfm_ad5.cpp", "bfm_sc5.cpp", "maygay1b.cpp", "mpu5.cpp"}
 STALE = {"unkfr.cpp"}          # in upstream arcade.flt; file does not exist
 
+# ---- console systems added ON TOP of arcade ----
+#
+# arcade.flt does not carry these at all, so they are an ADD rather than
+# a keep. One driver entry each - the games come from a cart file at
+# runtime, not from the driver list. notes/console-roadmap.txt
+CONSOLE_FLT = ("megadriv.cpp", "snes.cpp")
+
+# Buses arcade.lua ships COMMENTED OUT. Uncommenting is the whole of it
+# for two of them; SNES_CTRL is absent from arcade.lua entirely because
+# no arcade driver wants it, so it has to be inserted.
+# GAMEBOY comes along for the ride: BUSES["SNES"] pulls in bus/snes/sgb.cpp,
+# the Super Game Boy cart, which needs the Game Boy cart slot and the DMG
+# PPU. Without them the link fails with 19 unresolved gb_cart_slot_/
+# dmg_ppu_ symbols.
+CONSOLE_BUSES_ON = ("MEGADRIVE", "SNES", "GAMEBOY")
+CONSOLE_VIDEOS_ADD = ('VIDEOS["GB_LCD"] = true',)
+
+# ...and the Game Boy APU with it, for the same sgb.cpp reason.
+CONSOLE_SOUNDS_ADD = ('SOUNDS["GB_SOUND"] = true',)
+CONSOLE_BUSES_ADD = ("SNES_CTRL",)
+
+# Source the two drivers need that arcade does not already compile.
+# machine/snes.cpp and includes/megadriv.h are already in, via nss.cpp
+# and megatech.cpp. Anchored on a line that is already in the right
+# project group, so the files land in a group that is linked.
+CONSOLE_FILES = (
+    ('src/mame/drivers/nss.cpp",',
+     ('src/mame/drivers/snes.cpp",',
+      'src/mame/includes/snes.h",',
+      'src/mame/machine/snescx4.cpp",',
+      'src/mame/machine/snescx4.h",')),
+    ('src/mame/drivers/megatech.cpp",',
+     ('src/mame/drivers/megadriv.cpp",',
+      # megadriv.cpp instantiates the 32X and Sega CD devices even for a
+      # plain cartridge machine, so leaving them out compiles and then
+      # fails at link with 36 unresolved sega_32x_/sega_segacd_ symbols.
+      'src/mame/machine/mega32x.cpp",',
+      'src/mame/machine/mega32x.h",',
+      'src/mame/machine/megacd.cpp",',
+      'src/mame/machine/megacd.h",',
+      'src/mame/machine/megacdcd.cpp",',
+      'src/mame/machine/megacdcd.h",')),
+)
+
 
 def read(path):
     s = io.open(path, encoding="utf-8", newline="").read()
@@ -112,6 +156,36 @@ def build(drop):
                       "linkProjects_mame_coinop")
              .replace(banner, banner + " (coinop: arcade minus mech)")
             for l in kept]
+    # ---- console systems on top ----
+    body2 = flt.split(nl)
+    at = max(i for i, l in enumerate(body2)
+             if re.match(r"^[a-z0-9_]+\.cpp$", l.strip()))
+    body2[at + 1:at + 1] = sorted(CONSOLE_FLT)
+    flt = nl.join(body2)
+
+    out = []
+    for l in kept:
+        st = l.strip()
+        for b in CONSOLE_BUSES_ON:
+            if st == '--BUSES["%s"] = true' % b:
+                l = l.replace("--BUSES", "BUSES")
+        out.append(l)
+        # AFTER the uncomment above, so test the ORIGINAL text: st still
+        # holds the commented form at this point.
+        if st == '--BUSES["SNES"] = true':
+            for b in CONSOLE_BUSES_ADD:
+                out.append('BUSES["%s"] = true' % b)
+        if st == 'VIDEOS["SEGA315_5124"] = true':
+            out.extend(CONSOLE_VIDEOS_ADD)
+        if st == 'SOUNDS["SN76496"] = true':
+            out.extend(CONSOLE_SOUNDS_ADD)
+        for anchor, adds in CONSOLE_FILES:
+            if anchor in l:
+                indent = l[:len(l) - len(l.lstrip())]
+                for a in adds:
+                    out.append(indent + 'MAME_DIR .. "' + a)
+    kept = out
+
     return flt, nl2.join(kept)
 
 
