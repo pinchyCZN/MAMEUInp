@@ -4526,9 +4526,10 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 					DirWatcher_Watch(s_pWatcher, 1, GetSampleDirs(), true);
 			}
 
-			/* update game list */
-			if (bUpdateRoms == true || bUpdateSamples == true)
-				UpdateGameList(bUpdateRoms, bUpdateSamples);
+			// NETPLAY: no audit on a directory change. Upstream called
+			// UpdateGameList(bUpdateRoms, bUpdateSamples) here, which flags every
+			// driver UNKNOWN and re-audits the whole list, so editing rompath order
+			// during setup rescans from the top on every edit.
 
 			SetFocus(hwndList);
 		}

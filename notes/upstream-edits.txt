@@ -374,6 +374,17 @@ Table of Contents
    |                              | handler. g_SearchColumn is not |
    |                              | persisted                      |
    +------------------------------+--------------------------------+
+   | src/osd/winui/winui.cpp      | (cont) the Directories dialog  |
+   |                              | no longer re-audits. It called |
+   |                              | UpdateGameList, which flags    |
+   |                              | every driver UNKNOWN, so       |
+   |                              | editing rompath order          |
+   |                              | rescanned the whole list on    |
+   |                              | every edit. F5 and File ->     |
+   |                              | Audit are unaffected and the   |
+   |                              | launch path never gates on     |
+   |                              | audit results                  |
+   +------------------------------+--------------------------------+
    | src/osd/winui/winui.h        | GetSearchColumn and the        |
    |                              | SEARCH_* enum it returns       |
    +------------------------------+--------------------------------+
