@@ -24,6 +24,7 @@ struct netplay_launch
 	// path. Empty is a cold boot. Not saved, like autosave.
 	char        state[64];
 	bool        netstats;
+	char        cart[128];
 };
 
 // Returns false if cancelled. nGame is the driver index, used for the

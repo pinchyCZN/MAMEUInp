@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -28,6 +29,8 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <vector>
+#include <cctype>
 
 // Kept in our own file rather than MAMEUI.ini, so persistence costs no
 // upstream edit. notes/netplay-ui.txt 7
@@ -36,7 +39,8 @@
 
 static netplay_launch s_cfg;
 static int s_game = -1;
-static int s_selected = -1;    // the main window's selection
+static int s_selected = -1;     // the main window's selection
+static int s_media_drv = -1;    // driver the media dialog is editing
 
 static bool s_single_player = false;
 
@@ -74,6 +78,7 @@ static void defaults(netplay_launch &c)
 	c.autosave = 0;
 	c.state[0] = 0;
 	c.netstats = false;
+	c.cart[0] = 0;
 	c.game = -1;
 }
 
@@ -113,6 +118,11 @@ static void load_cfg(netplay_launch &c)
 			s_single_player = (std::atoi(val) != 0);
 		else if (!std::strcmp(key, "netstats"))
 			c.netstats = (std::atoi(val) != 0);
+		else if (!std::strcmp(key, "cart"))
+		{
+			std::strncpy(c.cart, val, sizeof(c.cart) - 1);
+			c.cart[sizeof(c.cart) - 1] = 0;
+		}
 	}
 	std::fclose(f);
 }
@@ -133,6 +143,8 @@ static void save_cfg(const netplay_launch &c)
 	std::fprintf(f, "savestates %d\n", c.savestates ? 1 : 0);
 	std::fprintf(f, "sendconfig %d\n", c.send_config ? 1 : 0);
 	std::fprintf(f, "netstats %d\n", c.netstats ? 1 : 0);
+	if (c.cart[0] != 0)
+		std::fprintf(f, "cart %s\n", c.cart);
 	if (s_single_player)
 		std::fprintf(f, "singleplayer 1\n");
 
@@ -870,6 +882,212 @@ static bool rom_gate(HWND hDlg, const std::string &driver, int &idx)
 
 
 //-------------------------------------------------
+//  cart / media selection
+//-------------------------------------------------
+
+// IS THIS SYSTEM A CONSOLE? Asked of the machine config rather than a
+// list of driver names, so a console added later answers correctly with
+// nothing to update. DriverHasSoftware builds a machine_config and looks
+// for a user-loadable image device - the same question the main window
+// asks before it populates the Software Area.
+//
+// IT BUILDS A MACHINE CONFIG, so it is not free. Cached against the
+// driver it was asked about, because the lobby asks on every selection
+// change and every repaint.
+static bool driver_wants_media(int drv)
+{
+	static int cached_drv = -2;
+	static bool cached_ans = false;
+
+	if (drv < 0)
+		return false;
+	if (drv == cached_drv)
+		return cached_ans;
+
+	cached_drv = drv;
+	cached_ans = DriverHasSoftware(u32(drv));
+	return cached_ans;
+}
+
+
+// The instance name of the first user-loadable image device - "cart" on
+// a cartridge console, "cdrm" on a CD one. THE LOBBY KEY IS BUILT FROM
+// THIS rather than hardcoding "cart", so a second slot later is a UI
+// change and not a protocol one. notes/console-roadmap.txt 3.1
+static std::string media_slot_name(int drv)
+{
+	if (drv < 0)
+		return std::string();
+
+	windows_options o;
+	load_options(o, OPTIONS_GAME, u32(drv), 1);
+	machine_config cfg(driver_list::driver(drv), o);
+
+	for (device_image_interface &img : image_interface_iterator(cfg.root_device()))
+		if (img.user_loadable())
+			return std::string(img.brief_instance_name());
+
+	return std::string();
+}
+
+
+// The extensions that slot accepts, as a file-dialog filter.
+static std::string media_filter(int drv, std::string &slotdesc)
+{
+	std::string filter;
+	slotdesc.clear();
+	if (drv < 0)
+		return filter;
+
+	windows_options o;
+	load_options(o, OPTIONS_GAME, u32(drv), 1);
+	machine_config cfg(driver_list::driver(drv), o);
+
+	for (device_image_interface &img : image_interface_iterator(cfg.root_device()))
+	{
+		if (!img.user_loadable())
+			continue;
+
+		slotdesc = img.instance_name();
+
+		// file_extensions() is a comma-separated list.
+		std::string pattern;
+		std::string exts(img.file_extensions());
+		size_t at = 0;
+		while (at <= exts.size())
+		{
+			const size_t c = exts.find(',', at);
+			const std::string one = exts.substr(at,
+					(c == std::string::npos) ? std::string::npos : c - at);
+			if (!one.empty())
+			{
+				if (!pattern.empty())
+					pattern += ";";
+				pattern += "*." + one;
+			}
+			if (c == std::string::npos)
+				break;
+			at = c + 1;
+		}
+
+		if (pattern.empty())
+			pattern = "*.*";
+
+		// Double-NUL terminated, NUL between the pairs. Built with a
+		// placeholder and patched below because a std::string cannot
+		// carry an embedded NUL through +=.
+		filter = slotdesc + " files|" + pattern + "|All files|*.*|";
+		break;
+	}
+	return filter;
+}
+
+
+// The lobby only ever stores and sends a BARE NAME, so a browse that
+// lands anywhere still contributes just the file name.
+static void media_browse(HWND hDlg, int drv)
+{
+	std::string desc;
+	std::string spec = media_filter(drv, desc);
+
+	// | to NUL, and a trailing NUL for the double terminator.
+	std::vector<char> filt(spec.begin(), spec.end());
+	for (size_t i = 0; i < filt.size(); i++)
+		if (filt[i] == '|')
+			filt[i] = 0;
+	filt.push_back(0);
+	filt.push_back(0);
+
+	char file[MAX_PATH];
+	file[0] = 0;
+
+	OPENFILENAMEA ofn;
+	std::memset(&ofn, 0, sizeof(ofn));
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hDlg;
+	ofn.lpstrFilter = filt.empty() ? nullptr : &filt[0];
+	ofn.lpstrFile = file;
+	ofn.nMaxFile = sizeof(file);
+	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+
+	if (!GetOpenFileNameA(&ofn))
+		return;
+
+	const char *base = std::strrchr(file, '\\');
+	const char *base2 = std::strrchr(file, '/');
+	if ((base2 != nullptr) && ((base == nullptr) || (base2 > base)))
+		base = base2;
+
+	SetDlgItemTextA(hDlg, IDC_NPM_FILE, (base != nullptr) ? base + 1 : file);
+}
+
+
+static INT_PTR CALLBACK media_proc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+	switch (msg)
+	{
+	case WM_INITDIALOG:
+		{
+			const int drv = int(lp);
+			s_media_drv = drv;
+
+			std::string desc;
+			media_filter(drv, desc);
+			if (desc.empty())
+				desc = "media";
+
+			std::string label = desc + ":";
+			label[0] = char(std::toupper(u8(label[0])));
+			SetDlgItemTextA(hDlg, IDC_NPM_SLOT, label.c_str());
+			SetDlgItemTextA(hDlg, IDC_NPM_FILE, s_cfg.cart);
+			SendDlgItemMessage(hDlg, IDC_NPM_FILE, EM_SETLIMITTEXT,
+					sizeof(s_cfg.cart) - 1, 0);
+
+			SetDlgItemTextA(hDlg, IDC_NPM_NOTE,
+					"The NAME only, not a path - every player resolves it "
+					"against their own ROM directories, so the file must sit "
+					"in one of them and be named the same on every machine. "
+					"Leave it empty to boot the system with no media.");
+			return true;
+		}
+
+	case WM_COMMAND:
+		switch (LOWORD(wp))
+		{
+		case IDC_NPM_BROWSE:
+			media_browse(hDlg, s_media_drv);
+			return true;
+
+		case IDOK:
+			{
+				char buf[128];
+				GetDlgItemTextA(hDlg, IDC_NPM_FILE, buf, sizeof(buf));
+
+				// A path pasted in by hand is reduced the same way the
+				// browse button reduces one.
+				const char *b = std::strrchr(buf, '\\');
+				const char *b2 = std::strrchr(buf, '/');
+				if ((b2 != nullptr) && ((b == nullptr) || (b2 > b)))
+					b = b2;
+
+				std::strncpy(s_cfg.cart, (b != nullptr) ? b + 1 : buf,
+						sizeof(s_cfg.cart) - 1);
+				s_cfg.cart[sizeof(s_cfg.cart) - 1] = 0;
+				save_cfg(s_cfg);
+				EndDialog(hDlg, 1);
+				return true;
+			}
+
+		case IDCANCEL:
+			EndDialog(hDlg, 0);
+			return true;
+		}
+		break;
+	}
+	return false;
+}
+
+//-------------------------------------------------
 //  starting from a savestate
 //-------------------------------------------------
 
@@ -907,6 +1125,32 @@ static bool state_gate(HWND hDlg, int drv)
 }
 
 
+// WARN, DO NOT REFUSE. Booting a console with no media is legal and is
+// what the main window does, so netplay keeps the same behaviour.
+static void media_show(HWND hDlg)
+{
+	if (s_cfg.cart[0] != 0)
+		game_result(hDlg, std::string("Media: ") + s_cfg.cart);
+	else
+		game_result(hDlg, "Media: none - the system will boot empty.");
+}
+
+
+static bool media_gate(HWND hDlg, int drv)
+{
+	if (!driver_wants_media(drv) || (s_cfg.cart[0] != 0))
+		return true;
+
+	game_result(hDlg,
+			"Warning: no cart file selected.\n\n"
+			"This system takes media. Hosting now boots it with an empty "
+			"slot, which is what the main window does too.\n\n"
+			"To play a game: Leave, choose one with Cart / media, then "
+			"Host game again.");
+	return true;
+}
+
+
 static void game_host(HWND hDlg)
 {
 	char driver[32];
@@ -916,6 +1160,8 @@ static void game_host(HWND hDlg)
 	if (!rom_gate(hDlg, driver, idx))
 		return;
 	if (!state_gate(hDlg, idx))
+		return;
+	if (!media_gate(hDlg, idx))
 		return;
 
 	char line[256];
@@ -1266,6 +1512,34 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 				lobby_close(hDlg, "Disconnected.");
 			}
 			return true;
+
+		case IDC_NPL_MEDIA:
+			{
+				// Whatever is in the System box, the same pick Host game
+				// uses, so the slot and the extensions match the system
+				// about to be hosted.
+				char pick[32];
+				GetDlgItemTextA(hDlg, IDC_NPG_DRIVER, pick, sizeof(pick));
+				const int drv = (pick[0] != 0)
+						? driver_list::find(pick) : s_selected;
+				if (drv < 0)
+				{
+					game_result(hDlg, "Pick a system first.");
+					return true;
+				}
+				if (!driver_wants_media(drv))
+				{
+					game_result(hDlg, std::string(pick)
+							+ " takes no media - it is not a console.");
+					return true;
+				}
+
+				DialogBoxParam(GetModuleHandle(nullptr),
+						MAKEINTRESOURCE(IDD_NETPLAY_MEDIA), hDlg,
+						media_proc, LPARAM(drv));
+				media_show(hDlg);
+				return true;
+			}
 
 		case IDC_NPL_DIRECT:
 			{

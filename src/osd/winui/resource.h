@@ -555,6 +555,12 @@
 #define IDC_NPS_PREVIEW                 2372
 #define IDC_NPS_PATH                    2373
 #define IDC_NPL_NETSTATS                2374
+#define IDC_NPL_MEDIA                   2375
+#define IDD_NETPLAY_MEDIA               2380
+#define IDC_NPM_SLOT                    2381
+#define IDC_NPM_FILE                    2382
+#define IDC_NPM_BROWSE                  2383
+#define IDC_NPM_NOTE                    2384
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
