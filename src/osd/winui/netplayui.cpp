@@ -67,6 +67,54 @@ static std::string  s_g_cart;        // media the host chose, by name
 static std::string  s_g_carthash;
 
 
+// WIRE FORMAT: lower-case, two digits per byte, no prefix.
+static std::string hex_of(const std::string &in)
+{
+	static const char D[] = "0123456789abcdef";
+	std::string out;
+	out.reserve(in.size() * 2);
+	for (size_t i = 0; i < in.size(); i++)
+	{
+		const unsigned char c = (unsigned char)in[i];
+		out += D[(c >> 4) & 0x0f];
+		out += D[c & 0x0f];
+	}
+	return out;
+}
+
+
+// Empty on anything malformed, which the caller treats as "no media"
+// rather than guessing at a partial name.
+static std::string unhex(const std::string &in)
+{
+	if ((in.size() % 2) != 0)
+		return std::string();
+
+	std::string out;
+	out.reserve(in.size() / 2);
+	for (size_t i = 0; i < in.size(); i += 2)
+	{
+		int v = 0;
+		for (int k = 0; k < 2; k++)
+		{
+			const char c = in[i + size_t(k)];
+			int d;
+			if ((c >= '0') && (c <= '9'))
+				d = c - '0';
+			else if ((c >= 'a') && (c <= 'f'))
+				d = 10 + (c - 'a');
+			else if ((c >= 'A') && (c <= 'F'))
+				d = 10 + (c - 'A');
+			else
+				return std::string();
+			v = (v << 4) | d;
+		}
+		out += char(v);
+	}
+	return out;
+}
+
+
 static void defaults(netplay_launch &c)
 {
 	std::strcpy(c.host, "127.0.0.1");
@@ -122,7 +170,8 @@ static void load_cfg(netplay_launch &c)
 			c.netstats = (std::atoi(val) != 0);
 		else if (!std::strcmp(key, "cart"))
 		{
-			std::strncpy(c.cart, val, sizeof(c.cart) - 1);
+			const std::string plain = unhex(val);
+			std::strncpy(c.cart, plain.c_str(), sizeof(c.cart) - 1);
 			c.cart[sizeof(c.cart) - 1] = 0;
 		}
 	}
@@ -146,7 +195,7 @@ static void save_cfg(const netplay_launch &c)
 	std::fprintf(f, "sendconfig %d\n", c.send_config ? 1 : 0);
 	std::fprintf(f, "netstats %d\n", c.netstats ? 1 : 0);
 	if (c.cart[0] != 0)
-		std::fprintf(f, "cart %s\n", c.cart);
+		std::fprintf(f, "cart %s\n", hex_of(c.cart).c_str());
 	if (s_single_player)
 		std::fprintf(f, "singleplayer 1\n");
 
@@ -610,6 +659,21 @@ static void game_result(HWND hDlg, const std::string &text)
 }
 
 
+// Adds a line without losing what is already there - the ROM audit
+// result and the media line are both worth seeing at once.
+static void game_result_add(HWND hDlg, const std::string &text)
+{
+	char now[1024];
+	GetDlgItemTextA(hDlg, IDC_NPG_RESULT, now, sizeof(now));
+
+	std::string all(now);
+	if (!all.empty())
+		all += "\r\n";
+	all += crlf_of(text);
+	SetDlgItemTextA(hDlg, IDC_NPG_RESULT, all.c_str());
+}
+
+
 // kv() for a value that is not a number.
 static std::string kvs(const std::string &s, const char *key)
 {
@@ -948,19 +1012,12 @@ static std::string media_of(const std::string &arg)
 		return std::string();
 
 	const size_t sp = arg.find(' ', eq);
-	return arg.substr(eq + 1, (sp == std::string::npos)
-			? std::string::npos : sp - eq - 1);
+	return unhex(arg.substr(eq + 1, (sp == std::string::npos)
+			? std::string::npos : sp - eq - 1));
 }
 
 
-// The SHA1 of a media file, found the way MAME finds a ROM: by name
-// against the whole rompath, which is a list. Empty when it is not
-// there, which the caller reports differently from a mismatch.
-//
-// FULL FILE. A cart is instant; a CD image is hundreds of megabytes and
-// this will pause for a moment on one. [open] Hashing a prefix plus the
-// size would do, if that ever matters.
-static std::string media_hash(const char *name)
+static std::string media_find(const char *name)
 {
 	if ((name == nullptr) || (name[0] == 0))
 		return std::string();
@@ -968,8 +1025,50 @@ static std::string media_hash(const char *name)
 	windows_options o;
 	load_options(o, OPTIONS_GLOBAL, -1, 0);
 
-	emu_file f(o.media_path(), OPEN_FLAG_READ);
-	if (f.open(name) != osd_file::error::NONE)
+	const std::string paths(o.media_path());
+	size_t at = 0;
+	while (at <= paths.size())
+	{
+		const size_t sc = paths.find(';', at);
+		std::string dir = paths.substr(at,
+				(sc == std::string::npos) ? std::string::npos : sc - at);
+
+		if (!dir.empty())
+		{
+			const char last = dir[dir.size() - 1];
+			if ((last != '/') && (last != '\\'))
+				dir += '\\';
+
+			const std::string full = dir + name;
+			FILE *probe = std::fopen(full.c_str(), "rb");
+			if (probe != nullptr)
+			{
+				std::fclose(probe);
+				return full;
+			}
+		}
+
+		if (sc == std::string::npos)
+			break;
+		at = sc + 1;
+	}
+	return std::string();
+}
+
+
+// The SHA1 of a media file, by the name every player shares.
+//
+// FULL FILE. A cart is instant; a CD image is hundreds of megabytes and
+// this will pause for a moment on one. [open] Hashing a prefix plus the
+// size would do, if that ever matters.
+static std::string media_hash(const char *name)
+{
+	const std::string full = media_find(name);
+	if (full.empty())
+		return std::string();
+
+	emu_file f(OPEN_FLAG_READ);
+	if (f.open(full) != osd_file::error::NONE)
 		return std::string();
 
 	std::string out = f.hashes("S").attribute_string();
@@ -1003,6 +1102,15 @@ static std::string media_slot_name(int drv)
 std::string NetplayMediaSlot(int drv)
 {
 	return media_slot_name(drv);
+}
+
+
+// And the full path, because the image loader will not search for it.
+// Empty when this machine does not have the file, which the caller must
+// treat as "do not mount" rather than passing the bare name through.
+std::string NetplayMediaPath(const char *name)
+{
+	return media_find(name);
 }
 
 
@@ -1083,7 +1191,8 @@ static void media_browse(HWND hDlg, int drv)
 	ofn.lpstrFilter = filt.empty() ? nullptr : &filt[0];
 	ofn.lpstrFile = file;
 	ofn.nMaxFile = sizeof(file);
-	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY
+			| OFN_NOCHANGEDIR;
 
 	if (!GetOpenFileNameA(&ofn))
 		return;
@@ -1222,10 +1331,19 @@ static void media_show(HWND hDlg)
 // the order deletes the whole case. notes/console-roadmap.txt 2.
 static bool media_gate(HWND hDlg, int drv)
 {
-	if (!driver_wants_media(drv) || (s_cfg.cart[0] != 0))
-		return true;
+	if (!driver_wants_media(drv))
+		return true;              // arcade: the box is ignored entirely
 
-	game_result(hDlg,
+	if (s_cfg.cart[0] != 0)
+	{
+		// SAY WHAT IS MOUNTED. The audit result alone says "ROM set is
+		// good", which is about the BIOS and tells the host nothing
+		// about the cart they are about to make everybody load.
+		game_result_add(hDlg, std::string("Media: ") + s_cfg.cart);
+		return true;
+	}
+
+	game_result_add(hDlg,
 			"Warning: no cart file selected.\n\n"
 			"This system takes media. Hosting now boots it with an empty "
 			"slot, which is what the main window does too.\n\n"
@@ -1260,7 +1378,7 @@ static void game_host(HWND hDlg)
 		const std::string slot = media_slot_name(idx);
 		const std::string h = media_hash(s_cfg.cart);
 		if (!slot.empty())
-			media = " media." + slot + "=" + s_cfg.cart
+			media = " media." + slot + "=" + hex_of(s_cfg.cart)
 					+ " mediahash=" + (h.empty() ? std::string("none") : h);
 	}
 
@@ -1304,6 +1422,8 @@ static bool media_join_gate(HWND hDlg, int idx)
 				"Both players need the same file.");
 		return false;
 	}
+
+	game_result_add(hDlg, std::string("Media: ") + s_g_cart);
 	(void)idx;
 	return true;
 }

@@ -4040,14 +4040,15 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 			// from the driver rather than being assumed to be "cart", so a
 			// CD system mounts in cdrm without a special case. Held in a
 			// string that outlives the call because playopts keeps pointers.
-			std::string media_slot;
+			std::string media_slot, media_path;
 			if (cfg.cart[0] != 0)
 			{
 				media_slot = NetplayMediaSlot(cfg.game);
-				if (!media_slot.empty())
+				media_path = NetplayMediaPath(cfg.cart);
+				if (!media_slot.empty() && !media_path.empty())
 				{
 					playopts.media_slot = media_slot.c_str();
-					playopts.media_file = cfg.cart;
+					playopts.media_file = media_path.c_str();
 					playopts_apply = 0x57;
 				}
 			}

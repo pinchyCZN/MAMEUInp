@@ -45,6 +45,11 @@ void NetplayClear(void);
 // named after its slot rather than being a fixed OPTION_ constant.
 std::string NetplayMediaSlot(int drv);
 
+// The bare media name resolved to a full path against this machine's ROM
+// directories, or empty if it is not in any of them. MAME's image loader
+// opens the path as given and does NOT search, so the launch needs this.
+std::string NetplayMediaPath(const char *name);
+
 // Phase 2: the lobby. Connect, see who else is here, chat. Starting a
 // game is not its job yet; Direct connect is. Returns true when the
 // user chose to launch, with the settings in out - the launch itself
