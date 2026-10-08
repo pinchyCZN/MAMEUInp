@@ -232,6 +232,8 @@ struct _play_options
 	const char *wavwrite;    // OPTION_WAVWRITE
 	const char *mngwrite;    // OPTION_MNGWRITE
 	const char *aviwrite;    // OPTION_AVIWRITE
+	const char *media_slot;
+	const char *media_file;
 };
 
 /***************************************************************************
@@ -945,6 +947,17 @@ static DWORD RunMAME(int nGameIndex, const play_options *playopts)
 			global_opts.set_value(OPTION_MNGWRITE, playopts->mngwrite, OPTION_PRIORITY_CMDLINE);
 		if (playopts->aviwrite)
 			global_opts.set_value(OPTION_AVIWRITE, playopts->aviwrite, OPTION_PRIORITY_CMDLINE);
+
+		// NETPLAY: the image options exist by now - OPTION_SYSTEMNAME was
+		// set above, and that is a custom entry whose setter runs
+		// emu_options::set_system_name and so
+		// update_slot_and_image_options. exists() rather than a bare
+		// set_value because a system without that slot would throw.
+		if (playopts->media_slot && playopts->media_file
+				&& playopts->media_file[0]
+				&& global_opts.exists(playopts->media_slot))
+			global_opts.set_value(playopts->media_slot, playopts->media_file,
+					OPTION_PRIORITY_CMDLINE);
 	}
 
 	// redirect messages to our handler
@@ -4021,6 +4034,22 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 			{
 				playopts.state = cfg.state;
 				playopts_apply = 0x57;
+			}
+
+			// NETPLAY: the cart, if the host chose one. The slot name comes
+			// from the driver rather than being assumed to be "cart", so a
+			// CD system mounts in cdrm without a special case. Held in a
+			// string that outlives the call because playopts keeps pointers.
+			std::string media_slot;
+			if (cfg.cart[0] != 0)
+			{
+				media_slot = NetplayMediaSlot(cfg.game);
+				if (!media_slot.empty())
+				{
+					playopts.media_slot = media_slot.c_str();
+					playopts.media_file = cfg.cart;
+					playopts_apply = 0x57;
+				}
 			}
 
 			NetplayApply(cfg);

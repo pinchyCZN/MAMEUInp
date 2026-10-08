@@ -93,6 +93,27 @@ struct lobby_client
 	std::string in;        // partial line
 };
 
+// kv() for a value that is not a number. Same shape: the key must
+// start a word, so "mediahash=" does not match inside another key.
+static std::string kv_str(const std::string &s, const char *key)
+{
+	const std::string want = std::string(key) + "=";
+	size_t at = s.find(want);
+	while (at != std::string::npos)
+	{
+		if ((at == 0) || (s[at - 1] == ' '))
+		{
+			const size_t b = at + want.size();
+			const size_t e = s.find(' ', b);
+			return s.substr(b, (e == std::string::npos)
+					? std::string::npos : e - b);
+		}
+		at = s.find(want, at + 1);
+	}
+	return std::string();
+}
+
+
 // The hosted game. One at a time: the relay serves one session, so a
 // second game would have nowhere to run.
 struct lobby_game
@@ -104,6 +125,14 @@ struct lobby_game
 	unsigned    batch = 1;
 	bool        savestates = true;
 	bool        send_config = true;
+
+	// The media the host chose, by bare name, and its hash. OPAQUE TO
+	// THE SERVER - it stores and repeats them and never looks inside.
+	// The key is named after the image slot, so a second one later
+	// needs no server change.
+	std::string media_key;      // "media.cart", "media.cdrm", ...
+	std::string media_file;
+	std::string media_hash;
 
 	// Lobby indices in slot order: roster[0] is the host and player 1.
 	// Slot order is the point - the server seats each emulator in the
@@ -215,6 +244,17 @@ private:
 	void broadcast_start();
 	void sweep();
 	int find(const struct sockaddr_in &from) const;
+
+	// " media.<slot>=<file> mediahash=<hash>", or empty. Repeated
+	// verbatim to every client; the server never interprets it.
+	std::string media_suffix() const
+	{
+		if (m_game.media_key.empty() || m_game.media_file.empty())
+			return std::string();
+		return " " + m_game.media_key + "=" + m_game.media_file
+				+ " mediahash=" + (m_game.media_hash.empty()
+						? std::string("none") : m_game.media_hash);
+	}
 
 	np_socket   m_sock;
 	unsigned    m_port;
@@ -687,13 +727,14 @@ void relay::lobby_game_state(int only)
 			// players= rather than the count as "2/4": the count is in
 			// ROSTER, and a field carried twice is a field that disagrees
 			// with itself.
-			"GAME %s host=%s players=%u delay=%u batch=%u savestates=%u config=%u",
+			"GAME %s host=%s players=%u delay=%u batch=%u savestates=%u config=%u%s",
 			m_game.driver.c_str(),
 			m_lobby[m_game.roster[0]].name.c_str(),
 			m_game.players,
 			m_game.delay, m_game.batch,
 			m_game.savestates ? 1u : 0u,
-			m_game.send_config ? 1u : 0u);
+			m_game.send_config ? 1u : 0u,
+			media_suffix().c_str());
 
 	std::string roster("ROSTER ");
 	for (unsigned k = 0; k < m_game.count; k++)
@@ -790,6 +831,27 @@ void relay::lobby_create(unsigned i, const std::string &arg)
 	m_game = lobby_game();
 	m_game.active = true;
 	m_game.driver = driver;
+
+	// Any one media.<slot>= key, whatever the slot is called.
+	m_game.media_key.clear();
+	m_game.media_file.clear();
+	m_game.media_hash.clear();
+	{
+		const size_t at = arg.find("media.");
+		if (at != std::string::npos)
+		{
+			const size_t eq = arg.find('=', at);
+			if (eq != std::string::npos)
+			{
+				const size_t sp = arg.find(' ', eq);
+				m_game.media_key = arg.substr(at, eq - at);
+				m_game.media_file = arg.substr(eq + 1,
+						(sp == std::string::npos) ? std::string::npos
+								: sp - eq - 1);
+			}
+		}
+		m_game.media_hash = kv_str(arg, "mediahash");
+	}
 	m_game.players = players;
 	m_game.delay = delay;
 	m_game.batch = batch;
@@ -874,11 +936,12 @@ void relay::lobby_start(unsigned i)
 		char buf[256];
 		std::snprintf(buf, sizeof(buf),
 				"LAUNCH game=%s slot=%u players=%u delay=%u batch=%u"
-				" savestates=%u config=%u",
+				" savestates=%u config=%u%s",
 				m_game.driver.c_str(), k + 1, m_game.players,
 				m_game.delay, m_game.batch,
 				m_game.savestates ? 1u : 0u,
-				m_game.send_config ? 1u : 0u);
+				m_game.send_config ? 1u : 0u,
+				media_suffix().c_str());
 		lobby_send(unsigned(m_game.roster[k]), buf);
 	}
 

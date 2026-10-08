@@ -7,6 +7,8 @@
 #ifndef MAME_OSD_WINUI_NETPLAYUI_H
 #define MAME_OSD_WINUI_NETPLAYUI_H
 
+#include <string>
+
 struct netplay_launch
 {
 	int         game;          // driver index, -1 if none
@@ -36,6 +38,12 @@ bool NetplayDialog(HWND hParent, int nGame, netplay_launch *out);
 // game starts trying to netplay.
 void NetplayApply(const netplay_launch &cfg);
 void NetplayClear(void);
+
+// The image device instance name this system loads media into -
+// "cart" on a cartridge console, "cdrm" on a CD one - or empty if
+// it takes none. The launch needs it because an image option is
+// named after its slot rather than being a fixed OPTION_ constant.
+std::string NetplayMediaSlot(int drv);
 
 // Phase 2: the lobby. Connect, see who else is here, chat. Starting a
 // game is not its job yet; Direct connect is. Returns true when the

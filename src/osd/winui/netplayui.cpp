@@ -63,6 +63,8 @@ static bool         s_g_savestates = true;
 static bool         s_g_config = true;
 static bool         s_g_mine = false;     // in the roster
 static bool         s_g_amhost = false;
+static std::string  s_g_cart;        // media the host chose, by name
+static std::string  s_g_carthash;
 
 
 static void defaults(netplay_launch &c)
@@ -608,6 +610,26 @@ static void game_result(HWND hDlg, const std::string &text)
 }
 
 
+// kv() for a value that is not a number.
+static std::string kvs(const std::string &s, const char *key)
+{
+	const std::string want = std::string(key) + "=";
+	size_t at = s.find(want);
+	while (at != std::string::npos)
+	{
+		if ((at == 0) || (s[at - 1] == ' '))
+		{
+			const size_t b = at + want.size();
+			const size_t e = s.find(' ', b);
+			return s.substr(b, (e == std::string::npos)
+					? std::string::npos : e - b);
+		}
+		at = s.find(want, at + 1);
+	}
+	return std::string();
+}
+
+
 // "delay=6" -> 6. Same reader as the server's; the lines are symmetric.
 static unsigned kv(const std::string &s, const char *key, unsigned fallback)
 {
@@ -910,6 +932,51 @@ static bool driver_wants_media(int drv)
 }
 
 
+// The media value out of a lobby line, found by the "media." prefix
+// rather than by knowing the slot name - the sender picked the slot,
+// and a second one later changes nothing here.
+static std::string media_of(const std::string &arg)
+{
+	const size_t at = arg.find("media.");
+	if (at == std::string::npos)
+		return std::string();
+	if ((at != 0) && (arg[at - 1] != ' '))
+		return std::string();
+
+	const size_t eq = arg.find('=', at);
+	if (eq == std::string::npos)
+		return std::string();
+
+	const size_t sp = arg.find(' ', eq);
+	return arg.substr(eq + 1, (sp == std::string::npos)
+			? std::string::npos : sp - eq - 1);
+}
+
+
+// The SHA1 of a media file, found the way MAME finds a ROM: by name
+// against the whole rompath, which is a list. Empty when it is not
+// there, which the caller reports differently from a mismatch.
+//
+// FULL FILE. A cart is instant; a CD image is hundreds of megabytes and
+// this will pause for a moment on one. [open] Hashing a prefix plus the
+// size would do, if that ever matters.
+static std::string media_hash(const char *name)
+{
+	if ((name == nullptr) || (name[0] == 0))
+		return std::string();
+
+	windows_options o;
+	load_options(o, OPTIONS_GLOBAL, -1, 0);
+
+	emu_file f(o.media_path(), OPEN_FLAG_READ);
+	if (f.open(name) != osd_file::error::NONE)
+		return std::string();
+
+	std::string out = f.hashes("S").attribute_string();
+	f.close();
+	return out;
+}
+
 // The instance name of the first user-loadable image device - "cart" on
 // a cartridge console, "cdrm" on a CD one. THE LOBBY KEY IS BUILT FROM
 // THIS rather than hardcoding "cart", so a second slot later is a UI
@@ -928,6 +995,14 @@ static std::string media_slot_name(int drv)
 			return std::string(img.brief_instance_name());
 
 	return std::string();
+}
+
+
+// Same thing for the launch, which lives in winui.cpp and needs the slot
+// to name the image option it sets.
+std::string NetplayMediaSlot(int drv)
+{
+	return media_slot_name(drv);
 }
 
 
@@ -1125,8 +1200,7 @@ static bool state_gate(HWND hDlg, int drv)
 }
 
 
-// WARN, DO NOT REFUSE. Booting a console with no media is legal and is
-// what the main window does, so netplay keeps the same behaviour.
+// What is mounted now, in the result pane, after the picker closes.
 static void media_show(HWND hDlg)
 {
 	if (s_cfg.cart[0] != 0)
@@ -1136,6 +1210,16 @@ static void media_show(HWND hDlg)
 }
 
 
+// WARN, DO NOT REFUSE. Booting a console with no media is legal and is
+// what the main window does, so netplay keeps the same behaviour; the
+// Sega CD boots to its own intro with no disc and two peers stay in sync
+// doing it. [verified]
+//
+// The cart must be chosen BEFORE hosting, which is why this does not
+// offer to attach one later: a peer that has already joined would then
+// have to be told the game changed, re-check the file and re-hash it,
+// and there is no good answer when its copy does not match. Requiring
+// the order deletes the whole case. notes/console-roadmap.txt 2.
 static bool media_gate(HWND hDlg, int drv)
 {
 	if (!driver_wants_media(drv) || (s_cfg.cart[0] != 0))
@@ -1165,15 +1249,63 @@ static void game_host(HWND hDlg)
 		return;
 
 	char line[256];
+	// MEDIA RIDES THE LOBBY, not the UDP handshake: the lobby is text and
+	// already ignores keys it does not know, so this costs no protocol
+	// version. The key is named after the SLOT, so a second one later is
+	// a UI change rather than a format change.
+	// notes/console-roadmap.txt 3.1
+	std::string media;
+	if (driver_wants_media(idx) && (s_cfg.cart[0] != 0))
+	{
+		const std::string slot = media_slot_name(idx);
+		const std::string h = media_hash(s_cfg.cart);
+		if (!slot.empty())
+			media = " media." + slot + "=" + s_cfg.cart
+					+ " mediahash=" + (h.empty() ? std::string("none") : h);
+	}
+
 	std::snprintf(line, sizeof(line),
-			"CREATE %s players=%u delay=%u batch=%u savestates=%u config=%u",
+			"CREATE %s players=%u delay=%u batch=%u savestates=%u config=%u%s",
 			driver,
 			combo_get(hDlg, IDC_NPG_PLAYERS, players_lo()),
 			combo_get(hDlg, IDC_NPG_DELAY, DELAY_LO),
 			combo_get(hDlg, IDC_NPG_BATCH, BATCH_LO),
 			(IsDlgButtonChecked(hDlg, IDC_NPG_SAVESTATES) == BST_CHECKED) ? 1u : 0u,
-			(IsDlgButtonChecked(hDlg, IDC_NPG_SENDCONFIG) == BST_CHECKED) ? 1u : 0u);
+			(IsDlgButtonChecked(hDlg, IDC_NPG_SENDCONFIG) == BST_CHECKED) ? 1u : 0u,
+			media.c_str());
 	lobby_send_line(line);
+}
+
+
+// THE NAME FINDS THE FILE, THE HASH DECIDES. A name match that passes
+// while the bytes differ is a silent desync - a USA dump against a
+// European one, a bad dump, a .bin against an interleaved .smd of the
+// same game. notes/console-roadmap.txt 3.2
+static bool media_join_gate(HWND hDlg, int idx)
+{
+	if (s_g_cart.empty())
+		return true;              // host chose no media
+
+	const std::string mine = media_hash(s_g_cart.c_str());
+	if (mine.empty())
+	{
+		game_result(hDlg, "You do not have " + s_g_cart + ".\n\n"
+				"Put it in one of your ROM directories under that exact "
+				"name. MAME searches every rompath entry.");
+		return false;
+	}
+
+	if (!s_g_carthash.empty() && (s_g_carthash != "none")
+			&& (mine != s_g_carthash))
+	{
+		game_result(hDlg, "Your copy of " + s_g_cart
+				+ " differs from the host's.\n\n"
+				"Same name, different bytes - a different dump or region. "
+				"Both players need the same file.");
+		return false;
+	}
+	(void)idx;
+	return true;
 }
 
 
@@ -1181,6 +1313,8 @@ static void game_join(HWND hDlg)
 {
 	int idx = -1;
 	if (!rom_gate(hDlg, s_g_driver, idx))
+		return;
+	if (!media_join_gate(hDlg, idx))
 		return;
 	lobby_send_line("JOIN");
 }
@@ -1217,6 +1351,14 @@ static bool game_launch(HWND hDlg, const std::string &arg)
 	c.batch = kv(arg, "batch", 1);
 	c.savestates = (kv(arg, "savestates", 1) != 0);
 	c.send_config = (kv(arg, "config", 1) != 0);
+
+	// THE HOST'S MEDIA, not this dialog's box. A guest plays what the
+	// host picked, the same rule the driver and the delay follow.
+	{
+		const std::string m = media_of(arg);
+		std::strncpy(c.cart, m.c_str(), sizeof(c.cart) - 1);
+		c.cart[sizeof(c.cart) - 1] = 0;
+	}
 
 	// Local to this player and never on the wire: only the host writes
 	// snapshots, so a guest asking for them would get nothing anyway.
@@ -1298,6 +1440,8 @@ static void lobby_handle(HWND hDlg, const std::string &line)
 		s_g_delay = kv(arg, "delay", 8);
 		s_g_batch = kv(arg, "batch", 1);
 		s_g_savestates = (kv(arg, "savestates", 1) != 0);
+		s_g_cart = media_of(arg);
+		s_g_carthash = kvs(arg, "mediahash");
 		s_g_config = (kv(arg, "config", 1) != 0);
 
 		// "host=name" and "2/4" are for the eye; the roster is the truth
@@ -1329,6 +1473,8 @@ static void lobby_handle(HWND hDlg, const std::string &line)
 		s_g_count = 0;
 		s_g_driver.clear();
 		s_g_host.clear();
+		s_g_cart.clear();
+		s_g_carthash.clear();
 
 		// The system edit is left as it is: with no game hosted it holds
 		// what this player is about to host, not a stale server value.
