@@ -38,7 +38,8 @@ set PROJECT=%~2
 
 if "%NP_JOBS%"=="" set NP_JOBS=2
 
-set SLN=build\projects\winui\mamecoinop\vs2017\mamecoinop.sln
+set SLNDIR=build\projects\winui\mamecoinop\vs2017
+set SLN=%SLNDIR%\mamecoinop.sln
 set VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional\VC\Auxiliary\Build\vcvarsall.bat
 
 cd /d %~dp0..
@@ -115,8 +116,23 @@ msbuild "%SLN%" /p:Configuration=%CONFIG% /p:Platform=Win32 %CAPS% /v:minimal /n
 goto :done
 
 :one_project
+rem ONE PROJECT MEANS ITS OWN vcxproj, NOT /t: ON THE SOLUTION. msbuild
+rem forwards a solution-level /t: down into every project the solution
+rem contains, so "/t:osd_winui" asked all 131 of them for a target by that
+rem name and printed MSB4057 once per project instead of building anything.
+rem The project file is the only thing that builds exactly one project.
+set PROJ=%SLNDIR%\%PROJECT%.vcxproj
+if not exist "%PROJ%" goto :no_project
+
 echo build: %CONFIG% Win32 project %PROJECT%, at most %NP_JOBS% compiler process
-msbuild "%SLN%" /p:Configuration=%CONFIG% /p:Platform=Win32 /t:%PROJECT% %CAPS% /v:minimal /nologo
+msbuild "%PROJ%" /p:Configuration=%CONFIG% /p:Platform=Win32 %CAPS% /v:minimal /nologo
+goto :done
+
+:no_project
+echo build: no project %PROJECT%
+echo        looked for %PROJ%
+echo        names are vcxproj basenames - emu, osd_winui, mamecoinop, bgfx
+exit /b 1
 
 :done
 set RC=%ERRORLEVEL%
