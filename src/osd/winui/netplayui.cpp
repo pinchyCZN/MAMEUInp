@@ -119,6 +119,7 @@ static void defaults(netplay_launch &c)
 {
 	std::strcpy(c.host, "127.0.0.1");
 	c.host2[0] = 0;
+	std::strcpy(c.name, "player");
 	c.port = 7000;
 	c.players = 2;
 	c.slot = 1;
@@ -155,6 +156,11 @@ static void load_cfg(netplay_launch &c)
 		{
 			std::strncpy(c.host2, val, sizeof(c.host2) - 1);
 			c.host2[sizeof(c.host2) - 1] = 0;
+		}
+		else if (!std::strcmp(key, "name"))
+		{
+			std::strncpy(c.name, val, sizeof(c.name) - 1);
+			c.name[sizeof(c.name) - 1] = 0;
 		}
 		else if (!std::strcmp(key, "port"))
 			c.port = unsigned(std::atoi(val));
@@ -194,6 +200,7 @@ static void save_cfg(const netplay_launch &c)
 	std::fprintf(f, "host %s\n", c.host);
 	if (c.host2[0] != 0)
 		std::fprintf(f, "host2 %s\n", c.host2);
+	std::fprintf(f, "name %s\n", c.name);
 	std::fprintf(f, "port %u\n", c.port);
 	std::fprintf(f, "players %u\n", c.players);
 	std::fprintf(f, "slot %u\n", c.slot);
@@ -597,6 +604,27 @@ static void measure_ping(void)
 }
 
 
+// THE NAME IS ONE WHITESPACE-DELIMITED TOKEN, NOT A FREE STRING. 
+static void name_read(HWND hDlg, char *out, size_t cap)
+{
+	char raw[32];
+	GetDlgItemTextA(hDlg, IDC_NPL_NAME, raw, sizeof(raw));
+
+	const char *p = raw;
+	while ((*p != 0) && ((unsigned char)*p <= 0x20))
+		p++;
+
+	size_t n = 0;
+	while ((p[n] != 0) && ((unsigned char)p[n] > 0x20) && (n < cap - 1))
+		n++;
+
+	std::memcpy(out, p, n);
+	out[n] = 0;
+	if (out[0] == 0)
+		std::strcpy(out, "player");
+}
+
+
 static void lobby_open(HWND hDlg)
 {
 	char host[64];
@@ -604,9 +632,7 @@ static void lobby_open(HWND hDlg)
 	const unsigned port = GetDlgItemInt(hDlg, IDC_NPL_PORT, nullptr, false);
 
 	char name[32];
-	GetDlgItemTextA(hDlg, IDC_NPL_NAME, name, sizeof(name));
-	if (name[0] == 0)
-		std::strcpy(name, "player");
+	name_read(hDlg, name, sizeof(name));
 	s_name = name;
 
 	if ((host[0] == 0) || (port < 1) || (port > 65535))
@@ -1827,7 +1853,8 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 		load_cfg(s_cfg);
 		host_fill(hDlg);
 		SetDlgItemInt(hDlg, IDC_NPL_PORT, s_cfg.port, false);
-		SetDlgItemTextA(hDlg, IDC_NPL_NAME, s_name.empty() ? "player" : s_name.c_str());
+		SetDlgItemTextA(hDlg, IDC_NPL_NAME,
+				!s_name.empty() ? s_name.c_str() : s_cfg.name);
 		SendDlgItemMessage(hDlg, IDC_NPL_SAY, EM_SETLIMITTEXT, 200, 0);
 
 		roster_init(hDlg);
@@ -1875,6 +1902,9 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 					std::strcpy(s_cfg.host2, s_cfg.host);
 					std::strcpy(s_cfg.host, typed);
 				}
+
+				name_read(hDlg, s_cfg.name, sizeof(s_cfg.name));
+				SetDlgItemTextA(hDlg, IDC_NPL_NAME, s_cfg.name);
 
 				s_cfg.port = GetDlgItemInt(hDlg, IDC_NPL_PORT, nullptr, false);
 				save_cfg(s_cfg);
