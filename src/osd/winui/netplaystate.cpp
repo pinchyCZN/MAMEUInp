@@ -133,8 +133,9 @@ void scan(int drv)
 		if (FileTimeToLocalFileTime(&fd.ftLastWriteTime, &local)
 				&& FileTimeToSystemTime(&local, &st))
 		{
-			std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u",
-					st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+			std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02u",
+					st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+					st.wSecond);
 		}
 		e.when = buf;
 
