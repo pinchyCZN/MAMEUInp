@@ -1440,8 +1440,8 @@ void cheat_manager::load_cheats(const char *filename)
 				}
 				catch (emu_fatalerror const &err)
 				{
-					// just move on to the next cheat
-					osd_printf_error("%s\n", err.string());
+					// NETPLAY: WARNING, NOT ERROR. winui.cpp
+					osd_printf_warning("%s\n", err.string());
 				}
 			}
 		}

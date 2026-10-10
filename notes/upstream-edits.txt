@@ -385,6 +385,15 @@ Table of Contents
    |                              | launch path never gates on     |
    |                              | audit results                  |
    +------------------------------+--------------------------------+
+   | src/frontend/mame/cheat.cpp  | the per-cheat catch reports a  |
+   |                              | bad expression as a warning    |
+   |                              | rather than an error. winui    |
+   |                              | boxes every error-channel      |
+   |                              | message, so one file with six  |
+   |                              | bad expressions blocked        |
+   |                              | startup six times. The whole-  |
+   |                              | file catch is untouched        |
+   +------------------------------+--------------------------------+
    | src/osd/winui/winui.h        | GetSearchColumn and the        |
    |                              | SEARCH_* enum it returns       |
    +------------------------------+--------------------------------+
