@@ -1,0 +1,344 @@
+MAMEUI Netplay                                             Design Note
+
+
+              FRAME FLOW AT DELAY 6, BATCH 1, TWO PLAYERS
+
+
+Abstract
+
+   A trace of one netplay session through the emulator's frame loop,
+   with the numbers worked out for input delay D = 6, batch K = 1 and
+   two players. Everything here is read out of netplay_manager.cpp and
+   ioport.cpp; the figures are the ones those files compute, not
+   estimates. The wire format itself is protocol.txt and is not
+   restated.
+
+Table of Contents
+
+   1. The session this traces
+   2. The four hook points
+   3. Starting up
+      3.1. The join gate comes first
+      3.2. The primed frames
+   4. The one identity
+   5. Per-frame flow
+   6. What one datagram carries
+   7. The two peers in step
+   8. How the delay absorbs ping
+      8.1. When the word is late anyway
+   9. Where to look next
+
+
+1.  The session this traces
+
+   Three settings are chosen; the rest are derived by the code at
+   session start.
+
+   +------------------+---------+----------------------------------+
+   | Quantity         | Value   | Where it comes from              |
+   +==================+=========+==================================+
+   | delay D          | 6       | chosen                           |
+   | batch K          | 1       | chosen                           |
+   | players          | 2       | chosen                           |
+   | m_need           | P1 + P2 | one bit per player               |
+   | redundancy depth | 6       | derived, see below               |
+   | words per packet | 6       | depth x batch                    |
+   | RING             | 1024    | manager.h, the input ring        |
+   +------------------+---------+----------------------------------+
+
+   The depth is not free configuration. A word for frame t is first
+   sent at frame t - D and can be resent at t - D + K, t - D + 2K and
+   so on, but the last copy that is any use leaves at t - 1. So
+
+       depth <= (D - 1) / K + 1 = (6 - 1) / 1 + 1 = 6
+
+   and the request, which defaults to D, is clamped to that ceiling.
+   At D = 6, K = 1 the ask and the ceiling coincide at 6.
+
+
+2.  The four hook points
+
+   All four live in ioport_manager::frame_update and nowhere else.
+   They are no-ops unless a session is running.
+
+   +-----------------+------------------------------------------------+
+   | Hook            | Does                                           |
+   +=================+================================================+
+   | frame_begin     | drains the socket, then BLOCKS until the input |
+   |                 | for this frame is complete                     |
+   | port_capture    | reads the local controls into m_pending        |
+   | port_inject     | overwrites the port from the ring slot for     |
+   |                 | this frame                                     |
+   | frame_end       | publishes m_pending as the word for a LATER    |
+   |                 | frame, sends it, advances the counter          |
+   +-----------------+------------------------------------------------+
+
+   Two orderings are load-bearing and both are commented as such at
+   the call site:
+
+   o  frame_begin is the FIRST thing in frame_update. A lockstep frame
+      has to be held before it starts, not patched part-way through
+      the port loop.
+
+   o  port_capture precedes port_inject, per port. Reversed, capture
+      reads back whatever inject just wrote.
+
+   frame_end is after the port loop because a player's word spans
+   several ports and is only complete once every port has been seen.
+
+
+3.  Starting up
+
+3.1.  The join gate comes first
+
+   Frame 0 does not begin until the server releases the session.
+   wait_for_input holds while the link is not ready, and the reason is
+   not politeness: a word published before the other peer has joined
+   is relayed to nobody and is gone for good. That costs exactly D
+   frames of input and desyncs both peers permanently.
+
+   So nothing in sections 4 onward happens until both peers are in.
+
+3.2.  The primed frames
+
+   At session start the first D slots are filled in by hand:
+
+       for f in 0 .. D-1:
+           slot[f].have  = m_need       both players marked present
+           slot[f].words = neutral      every word cleared
+
+       m_published = D - 1              = 5
+
+   Two consequences, and they are the whole startup story:
+
+   o  FRAMES 0..5 RUN IMMEDIATELY. They are already complete, so
+      frame_begin never blocks on them and no packet is needed. The
+      session runs D frames before it first depends on the network.
+
+   o  THOSE FRAMES HAVE NO INPUT. Both players' words are neutral, so
+      the first six frames ignore the controls. At 60 Hz that is a
+      tenth of a second, inside the machine's own reset.
+
+   Setting m_published to D - 1 is what lets one rule cover both the
+   first frame and every frame after a resync: nothing may ever write
+   a frame at or below the high-water mark again.
+
+   [open] The neutral word forces every analog axis to its minimum
+   rather than its default, so a lightgun crosshair starts at the edge
+   and snaps to centre D frames in. Deterministic on both peers, so it
+   cannot desync.
+
+
+4.  The one identity
+
+   Everything else follows from this. In frame_end:
+
+       publish_up_to(F + D, m_pending)
+
+   and publish_up_to starts at m_published + 1. Once running,
+   m_published is F - 1 + D, so first = F + D and exactly one frame is
+   published per frame_end:
+
+       THE WORD CAPTURED AT FRAME F IS INJECTED AT FRAME F + D
+
+   At D = 6, what you press on frame 100 takes effect on frame 106, on
+   every peer, including the one that pressed it. That is the felt lag,
+   and it is also the delivery budget - the same six frames.
+
+   publish_up_to is a loop, not a single store, and that is deliberate.
+   If the counter has moved further than one frame - the frame a replay
+   finishes on - the loop fills every frame from m_published + 1 up to
+   F + D. A HOLE IN THE STREAM STALLS EVERY PEER FOREVER: one frame
+   with no word cannot be skipped and nothing will ever produce it, and
+   a peer can end up waiting on its own word, which only publishing
+   puts in the ring. Filling repeats an input, which is a visible
+   artifact and nothing worse.
+
+
+5.  Per-frame flow
+
+   One emulated frame, one peer. F is m_frame.
+
+    ioport_manager::frame_update
+    |
+    +-- (1) frame_begin
+    |       |
+    |       +-- poll_link ............ drain socket, publish arrivals
+    |       |                          into ring slots
+    |       +-- service_resync
+    |       |
+    |       +-- wait_for_input
+    |             |
+    |             +-- complete(F) ?
+    |             |     slot[F].stamp == F
+    |             |     AND (slot[F].have & m_need) == m_need
+    |             |
+    |             +-- yes -> return at once, no delay
+    |             |
+    |             +-- no  -> HOLD: loop of ~1 ms polls
+    |                          ~8 ms   ask for a resend     NAK_FIRST
+    |                          ~50 ms  ask again, repeating NAK_REPEAT
+    |                          ~100 ms pause, pump display  PUMP_AFTER
+    |                          ~3 s    tell the player      STALL_LIMIT
+    |                        the hold NEVER gives up and runs
+    |                        the frame - that would desync
+    |
+    +-- (2) for each port
+    |       |
+    |       +-- port_capture ......... local controls -> m_pending
+    |       |                          skipped while replaying, and
+    |       |                          while the chat box is open
+    |       +-- port_inject .......... slot[F] -> the port
+    |
+    +-- (3) frame_end
+            |
+            +-- publish_up_to(F + D, m_pending)
+            |     |
+            |     +-- slot[F+D].words[me] = m_pending
+            |     +-- batch_add -> at K words, batch_flush -> send
+            |
+            +-- link tick, poll_link
+            +-- m_pending cleared
+            +-- F++
+
+   At K = 1 the batch flushes on every frame, so this is one datagram
+   out per frame per peer.
+
+
+6.  What one datagram carries
+
+   batch_flush asks for a window of depth x batch = 6 words, and
+   send_window walks BACKWARD from the newest frame while the ring
+   still holds our own word for each one. The header carries a single
+   base_frame and a count, so the run has to be contiguous and a gap
+   ends it early.
+
+   At frame_end of frame F the newest published frame is F + 6, so the
+   datagram is:
+
+       base_frame  = F + 1
+       nframes     = 6
+       words       = our words for F+1, F+2, F+3, F+4, F+5, F+6
+       player_mask = just this peer
+       flags       = FLAG_REDUNDANT, because 6 carried > 1 new
+
+   Only F + 6 is new. The other five are copies of words already sent
+   in the previous five datagrams. That is the point: a word appears in
+   six separate datagrams, so a burst of up to FIVE consecutive losses
+   is survivable with no retransmission at all.
+
+   The resends cost nothing to produce. The words are already in the
+   ring at slot[f].words[me] and the ring holds 1024 frames, so no
+   separate history buffer exists to keep in step.
+
+   On arrival, each word is handed to publish(), which drops anything
+   for a frame already run or further ahead than the ring can hold. So
+   a duplicate or a late copy is discarded without a special case.
+
+
+7.  The two peers in step
+
+   Peer A's view. a<n> is the word A captured at its frame n; b<n> is
+   the word B captured at its frame n.
+
+   +-------+--------------------+----------+-----------+------------+
+   | A at  | injects slot F     | captures | publishes | datagram   |
+   | frame | holding            |          | slot      | carries    |
+   +=======+====================+==========+===========+============+
+   |   0   | neutral, primed    |   a0     |     6     |   1 .. 6   |
+   |   1   | neutral, primed    |   a1     |     7     |   2 .. 7   |
+   |   2   | neutral, primed    |   a2     |     8     |   3 .. 8   |
+   |   3   | neutral, primed    |   a3     |     9     |   4 .. 9   |
+   |   4   | neutral, primed    |   a4     |    10     |   5 .. 10  |
+   |   5   | neutral, primed    |   a5     |    11     |   6 .. 11  |
+   |   6   | a0 + b0            |   a6     |    12     |   7 .. 12  |
+   |   7   | a1 + b1            |   a7     |    13     |   8 .. 13  |
+   |   8   | a2 + b2            |   a8     |    14     |   9 .. 14  |
+   +-------+--------------------+----------+-----------+------------+
+
+   Read the first dependency off the table: slot 6 is the first slot
+   that needs anything from B, and what it needs is b0 - the word B
+   captured on ITS frame 0 and sent in ITS first datagram.
+
+       B captures b0 at B frame 0, sends it at B frame_end(0)
+       A needs    b0 at A frame_begin(6)
+
+   Six frame periods of travel time. The same holds for every later
+   frame, which is what makes the budget constant rather than
+   something that decays.
+
+   The first datagram's redundant tail is harmless: frames 1..5 in it
+   are the primed neutral words, bit-identical to what the receiver
+   primed for itself, so publishing them changes nothing.
+
+   The two peers self-synchronise without a clock. Neither can run
+   frame F until it has both words for F, so the faster machine simply
+   waits in frame_begin. Nothing paces them but the slower peer and
+   the link.
+
+
+8.  How the delay absorbs ping
+
+   D is not a buffer sitting beside the delay. It IS the buffer. With
+   delay D the input for frame F was captured D frames earlier, so the
+   network has that long to deliver it, and that window is the entire
+   jitter tolerance.
+
+   Batching spends the budget rather than providing it - a sender
+   cannot transmit a batch until it has captured every frame in it, so
+
+       effective budget = (D - K + 1) frames
+
+   At D = 6, K = 1 that is the full 6 frames. At dino's measured
+   59.637405 Hz a frame is 16.77 ms, so
+
+       budget = 6 x 16.77 ms = ~101 ms
+
+   of one-way peer-to-peer delivery time, jitter included. Arrive
+   inside it and the hold in frame_begin never triggers: complete(F)
+   is already true and the frame runs with no added delay at all. That
+   is why a bigger D rides out a worse link - the picture stays smooth
+   and the only cost is that the controls answer D frames later.
+
+   The sizing formula and the preset ladder are protocol.txt 1.6.3 and
+   are not repeated here. One fact from it is worth knowing while
+   reading this trace: D NEED NOT MATCH BETWEEN PEERS. m_delay decides
+   only which future slot a peer's own capture lands on, and emulated
+   state depends solely on the CONTENTS of a slot, which is the same
+   set of words everywhere. A can run D = 3 against B on D = 12 and
+   the session stays bit-identical.
+
+8.1.  When the word is late anyway
+
+   frame_begin holds, and the escalation is in section 5. The ladder
+   matters less than what is NOT on it: there is no point at which the
+   hold gives up and runs the frame. Running a frame on incomplete
+   input desyncs silently and permanently, so the 3-second mark only
+   puts a message on screen to give a frozen picture a reason.
+
+   Two failures are called out in the code because they look like
+   packet loss and are not:
+
+   o  WAITING ON OUR OWN WORD is never recoverable. Nothing on the
+      link can supply it - only publishing puts it in the ring - so it
+      is a hole in our own stream and the session is over. It is
+      reported rather than waited on.
+
+   o  A PEER THE SERVER REFUSED has no session to wait for. The
+      refusal is read and the machine exits, rather than sitting in
+      the join gate forever.
+
+
+9.  Where to look next
+
+   +----------------------------+----------------------------------+
+   | The wire format, handshake | notes/protocol.txt               |
+   | Delay sizing and presets   | notes/protocol.txt 1.6.3         |
+   | Retransmission, STALL, NAK | notes/protocol.txt 3.10, 3.12    |
+   | Resync from a savestate    | notes/protocol.txt 2             |
+   | The hooks, and what MAME   | notes/netplay-hooks.txt          |
+   | guarantees at each         |                                  |
+   | What perturbs emulated     | notes/determinism.txt            |
+   | state                      |                                  |
+   | The code                   | src/emu/netplay/                 |
+   +----------------------------+----------------------------------+

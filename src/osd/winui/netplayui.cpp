@@ -41,13 +41,12 @@ static netplay_launch s_cfg;
 static int s_game = -1;
 static int s_selected = -1;     // the main window's selection
 static int s_media_drv = -1;    // driver the media dialog is editing
-
-static bool s_single_player = false;
+static bool s_debug = false;
 
 // Two, unless the development flag says otherwise.
 static unsigned players_lo(void)
 {
-	return s_single_player ? 1 : 2;
+	return s_debug ? 1 : 2;
 }
 
 // The hosted game as the server last described it. One game at a time,
@@ -176,8 +175,8 @@ static void load_cfg(netplay_launch &c)
 			c.savestates = (std::atoi(val) != 0);
 		else if (!std::strcmp(key, "sendconfig"))
 			c.send_config = (std::atoi(val) != 0);
-		else if (!std::strcmp(key, "singleplayer"))
-			s_single_player = (std::atoi(val) != 0);
+		else if (!std::strcmp(key, "debug"))
+			s_debug = (std::atoi(val) != 0);
 		else if (!std::strcmp(key, "netstats"))
 			c.netstats = (std::atoi(val) != 0);
 		else if (!std::strcmp(key, "cart"))
@@ -211,8 +210,8 @@ static void save_cfg(const netplay_launch &c)
 	std::fprintf(f, "netstats %d\n", c.netstats ? 1 : 0);
 	if (c.cart[0] != 0)
 		std::fprintf(f, "cart %s\n", hex_of(c.cart).c_str());
-	if (s_single_player)
-		std::fprintf(f, "singleplayer 1\n");
+	if (s_debug)
+		std::fprintf(f, "debug 1\n");
 
 	std::fclose(f);
 }
@@ -323,7 +322,7 @@ static const char *from_dialog(HWND hDlg, netplay_launch &c)
 	if ((c.port < 1) || (c.port > 65535))
 		return "Port must be 1 to 65535.";
 	if ((c.players < players_lo()) || (c.players > 10))
-		return s_single_player
+		return s_debug
 				? "Players must be 1 to 10."
 				: "Players must be 2 to 10.";
 	if ((c.slot < 1) || (c.slot > c.players))
@@ -373,7 +372,7 @@ static INT_PTR CALLBACK NetplayDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 
 		case IDOK:
 			{
-				netplay_launch c;
+				netplay_launch c = s_cfg;
 				const char *const err = from_dialog(hDlg, c);
 				if (err != nullptr)
 				{
@@ -1851,6 +1850,11 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 	{
 	case WM_INITDIALOG:
 		load_cfg(s_cfg);
+
+		ShowWindow(GetDlgItem(hDlg, IDC_NPL_DIRECT),
+				s_debug ? SW_SHOW : SW_HIDE);
+		EnableWindow(GetDlgItem(hDlg, IDC_NPL_DIRECT), s_debug);
+
 		host_fill(hDlg);
 		SetDlgItemInt(hDlg, IDC_NPL_PORT, s_cfg.port, false);
 		SetDlgItemTextA(hDlg, IDC_NPL_NAME,
