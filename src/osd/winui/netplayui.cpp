@@ -747,6 +747,7 @@ static unsigned kv(const std::string &s, const char *key, unsigned fallback)
 #define DELAY_LO    1
 #define DELAY_HI    20
 static const unsigned s_autosave_secs[] = { 0, 10, 30, 60, 120, 240 };
+static unsigned s_autosave = 0;
 
 #define BATCH_LO    1
 #define BATCH_HI    6
@@ -782,7 +783,11 @@ static void autosave_fill(HWND hDlg)
 		SendDlgItemMessageW(hDlg, IDC_NPG_AUTOSAVE, CB_ADDSTRING, 0,
 				reinterpret_cast<LPARAM>(t));
 	}
-	SendDlgItemMessage(hDlg, IDC_NPG_AUTOSAVE, CB_SETCURSEL, 0, 0);
+	unsigned sel = 0;
+	for (unsigned i = 0; i < ARRAY_LENGTH(s_autosave_secs); i++)
+		if (s_autosave_secs[i] == s_autosave)
+			sel = i;
+	SendDlgItemMessage(hDlg, IDC_NPG_AUTOSAVE, CB_SETCURSEL, sel, 0);
 }
 
 
@@ -1866,7 +1871,7 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 		combo_fill(hDlg, IDC_NPG_PLAYERS, players_lo(), PLAYERS_HI, s_cfg.players);
 		combo_fill(hDlg, IDC_NPG_DELAY, DELAY_LO, DELAY_HI, s_cfg.delay);
 		combo_fill(hDlg, IDC_NPG_BATCH, BATCH_LO, BATCH_HI, s_cfg.batch);
-		autosave_fill(hDlg);        // Off every time, by design
+		autosave_fill(hDlg);        // this run only - see s_autosave
 		CheckDlgButton(hDlg, IDC_NPG_SAVESTATES,
 				s_cfg.savestates ? BST_CHECKED : BST_UNCHECKED);
 		CheckDlgButton(hDlg, IDC_NPG_SENDCONFIG,
@@ -1894,6 +1899,11 @@ static INT_PTR CALLBACK LobbyDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
 	case WM_COMMAND:
 		switch (LOWORD(wParam))
 		{
+		case IDC_NPG_AUTOSAVE:
+			if (HIWORD(wParam) == CBN_SELCHANGE)
+				s_autosave = autosave_get(hDlg);
+			return true;
+
 		case IDC_NPL_CONNECT:
 			if (s_state == LOBBY_IDLE)
 			{
