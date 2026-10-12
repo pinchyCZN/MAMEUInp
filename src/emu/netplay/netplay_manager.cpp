@@ -118,6 +118,15 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_req()
 	, m_resync_ready(false)
 	, m_resync_done_id(0)
+	, m_resync_dead_id(0)
+	, m_recv_best(0)
+	, m_recv_stuck(0)
+	, m_recv_last(0)
+	, m_recv_frame(0)
+	, m_recv_said(false)
+	, m_serve_last(0)
+	, m_serve_frame(0)
+	, m_serve_said(false)
 	, m_snap_period(0)
 	, m_snap_keep(10)
 	, m_snap_next(0)
@@ -1142,6 +1151,88 @@ bool manager::request_resync(running_machine &machine)
 }
 
 
+// ONE TEARDOWN FOR EVERY WAY A TRANSFER CAN END, because the two halves
+// are not symmetric and getting one of them wrong leaves a peer serving
+// into the void or receiving a blob nothing will finish.
+//
+// The id goes on the dead list either way: chunks already in flight
+// arrive after this and would otherwise re-arm the receive, which costs a
+// whole extra nag cycle and a second message to the player.
+void manager::drop_resync(u8 reason, const char *why)
+{
+	const bool receiving = m_resync_wanted;
+	const bool serving = m_resync_serving;
+	if (!receiving && !serving)
+		return;
+
+	if (m_resync_id != 0)
+		m_resync_dead_id = m_resync_id;
+
+	if (receiving)
+	{
+		// Tell the host to stop sending. RESERVED ID, NOT A NEW MESSAGE -
+		// the relay would drop an unknown type without forwarding it.
+		if (m_link && (reason == NAK_CANCELLED))
+		{
+			resync_req_payload req;
+			req.id = RESYNC_ID_CANCEL;
+			req.want = 0;
+			req.bitmap_bytes = 0;
+			std::memset(req.bitmap, 0, sizeof(req.bitmap));
+			u8 buf[MAX_DATAGRAM];
+			const size_t len = build_resync_req(buf, sizeof(buf), 0, req);
+			if (len != 0)
+				m_link->send(buf, len);
+		}
+
+		m_resync_wanted = false;
+		m_resync_nag = 0;
+		m_resync_id = 0;
+		m_recv_said = false;
+		m_recv_stuck = 0;
+		m_recv_best = 0;
+	}
+
+	if (serving)
+	{
+		// The asker is told, or it waits out its own timeout and reports
+		// something vaguer than the reason we already know.
+		if (reason != 0)
+			send_nak(NAK_ABOUT_RESYNC, reason);
+		m_resync_serving = false;
+		m_send_queue.clear();
+		m_serve_said = false;
+		m_serve_last = 0;
+	}
+
+	m_blob.clear();
+
+	osd_printf_info("netplay: resync ended - %s\n", why);
+	m_machine.popmessage("Resync cancelled: %s", why);
+}
+
+
+// Either half, whichever this peer owns. The message says "not in sync"
+// outright because that is what a player has to act on: cancelling stops
+// the transfer, it does not make the session valid, and with MSG_HASH
+// still unimplemented nothing else will ever say so.
+bool manager::ui_cancel_resync(running_machine &machine)
+{
+	manager *const m = active();
+	if ((m == nullptr) || (s_owner != &machine))
+		return false;
+	if (!m->m_resync_wanted && !m->m_resync_serving)
+		return false;
+
+	const bool receiving = m->m_resync_wanted;
+	m->drop_resync(NAK_CANCELLED, "cancelled");
+	if (receiving)
+		machine.popmessage(
+			"Resync cancelled - you are NOT in sync with the host");
+	return true;
+}
+
+
 void manager::send_resync_req()
 {
 	if (!m_link)
@@ -1162,6 +1253,35 @@ void manager::send_resync_req()
 	{
 		req.want = u16(m_blob.missing(req.bitmap));
 		req.bitmap_bytes = u16(resync_bitmap_bytes(m_blob.chunks()));
+
+		if ((m_recv_best == 0) || (req.want < m_recv_best))
+		{
+			m_recv_best = req.want;
+			m_recv_stuck = 0;
+		}
+		else
+		{
+			m_recv_stuck++;
+		}
+
+		const unsigned total = m_blob.chunks();
+		const unsigned done = (total > req.want) ? (total - req.want) : 0;
+		if (!m_recv_said)
+		{
+			m_recv_said = true;
+			m_machine.popmessage("Receiving state from the host: %d KB",
+				int(m_blob.size() / 1024));
+		}
+		else if ((m_recv_last > req.want) && (m_frame > m_recv_frame))
+		{
+			const unsigned got = m_recv_last - req.want;
+			const unsigned span = unsigned(m_frame - m_recv_frame);
+			const unsigned eta = unsigned((u64(req.want) * span) / got) / 60;
+			m_machine.popmessage("Receiving state: %d%%, about %d s left",
+				int((done * 100) / ((total != 0) ? total : 1)), int(eta));
+		}
+		m_recv_last = req.want;
+		m_recv_frame = m_frame;
 	}
 
 	u8 buf[MAX_DATAGRAM];
@@ -1259,6 +1379,14 @@ void manager::serve_resync(const resync_req_payload &req)
 		return;
 	}
 
+	// THE ASKER GAVE UP OR PRESSED CANCEL. Stop serving rather than
+	// pushing megabytes at somebody who has stopped listening.
+	if (req.id == RESYNC_ID_CANCEL)
+	{
+		drop_resync(0, "cancelled by the other player");
+		return;
+	}
+
 	if ((req.id != m_resync_id) || !m_resync_serving)
 		return;                 // a stale attempt
 
@@ -1269,6 +1397,40 @@ void manager::serve_resync(const resync_req_payload &req)
 		if ((req.bitmap[i / 8] & (1u << (i % 8))) != 0)
 			m_send_queue.push_back(i);
 	}
+
+	if (!m_serve_said)
+	{
+		m_serve_said = true;
+		m_machine.popmessage("Sending state to a guest: %d KB",
+			int(m_blob.size() / 1024));
+	}
+	else if ((m_serve_last > req.want) && (m_frame > m_serve_frame))
+	{
+		const unsigned got = m_serve_last - req.want;
+		const unsigned span = unsigned(m_frame - m_serve_frame);
+		const u64 eta_frames = (u64(req.want) * span) / got;
+		const unsigned kbs = unsigned((u64(got) * RESYNC_CHUNK * 60)
+			/ (u64(span) * 1024));
+
+		if (eta_frames > RESYNC_ETA_LIMIT)
+		{
+			char why[96];
+			std::snprintf(why, sizeof(why),
+				"%d KB at %d KB/s needs about %d s",
+				int(m_blob.size() / 1024), int(kbs),
+				int(eta_frames / 60));
+			drop_resync(NAK_TOO_SLOW, why);
+			return;
+		}
+
+		const unsigned total = m_blob.chunks();
+		const unsigned done = (total > req.want) ? (total - req.want) : 0;
+		m_machine.popmessage("Sending state: %d%%, %d KB/s, about %d s left",
+			int((done * 100) / ((total != 0) ? total : 1)), int(kbs),
+			int(eta_frames / 60));
+	}
+	m_serve_last = req.want;
+	m_serve_frame = m_frame;
 }
 
 
@@ -1294,6 +1456,9 @@ void manager::do_capture()
 	m_resync_frame = m_frame;
 	m_resync_serving = true;
 	m_resyncs++;
+	m_serve_said = false;
+	m_serve_last = 0;
+	m_serve_frame = m_frame;
 
 	m_send_queue.clear();
 	for (unsigned i = 0; i < m_blob.chunks(); i++)
@@ -1351,6 +1516,9 @@ void manager::take_resync_chunk(frame_t state_frame, const resync_payload &p,
 	// A straggler from a transfer already applied. Without this it would
 	// arm the push path below and start the whole thing again.
 	if ((p.id != 0) && (p.id == m_resync_done_id))
+		return;
+
+	if ((p.id != 0) && (p.id == m_resync_dead_id))
 		return;
 
 	// UNSOLICITED CHUNKS ARE ACCEPTED, and that is the entire mechanism
@@ -1688,9 +1856,15 @@ void manager::take_nak(u8 about, u8 reason)
 	if (!m_resync_wanted)
 		return;                 // not ours, or already over
 
+	if (m_resync_id != 0)
+		m_resync_dead_id = m_resync_id;
+
 	m_resync_wanted = false;
 	m_resync_nag = 0;
 	m_resync_id = 0;
+	m_recv_said = false;
+	m_recv_stuck = 0;
+	m_recv_best = 0;
 	m_blob.clear();
 
 	osd_printf_info("netplay: resync refused - %s\n", nak_text(reason));
@@ -2868,11 +3042,16 @@ void manager::frame_end(running_machine &machine)
 	if (m->m_resync_wanted && ((m->m_frame % 30) == 15))
 	{
 		m->m_resync_nag++;
-		if (m->m_resync_nag > 20)
+
+		if ((m->m_resync_id == 0)
+			&& (m->m_resync_nag > RESYNC_SILENT_ROUNDS))
 		{
-			m->m_resync_wanted = false;
-			m->m_blob.clear();
-			m->m_machine.popmessage("Resync gave up - no answer from the host");
+			m->drop_resync(0, "no answer from the host");
+		}
+		else if ((m->m_resync_id != 0)
+			&& (m->m_recv_stuck > RESYNC_STUCK_ROUNDS))
+		{
+			m->drop_resync(0, "the transfer stopped making progress");
 		}
 		else if (m->m_resync_id != 0)
 		{

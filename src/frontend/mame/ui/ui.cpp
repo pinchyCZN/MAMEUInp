@@ -1461,6 +1461,7 @@ uint32_t mame_ui_manager::handler_confirm_quit(render_container &container)
 	// if the user press ESC, just continue
 	else if (machine().ui_input().pressed(IPT_UI_CANCEL))
 	{
+		netplay::manager::ui_cancel_resync(machine());
 		machine().resume();
 		state = UI_HANDLER_CANCEL;
 	}

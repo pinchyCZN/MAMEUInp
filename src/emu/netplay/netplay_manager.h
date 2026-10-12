@@ -124,6 +124,14 @@ public:
 	// to ask (no session, or this peer IS the host).
 	static bool request_resync(running_machine &machine);
 
+	// Abandons a transfer this peer is in, either end, and tells the
+	// other. Bound to the confirm-quit dismissal in ui.cpp: Escape
+	// twice is already an open-the-box-and-close-it no-op, so it is a
+	// free gesture to overload, and Enter still quits. Returns true if
+	// there was something to cancel, so the caller can stay silent when
+	// there was not.
+	static bool ui_cancel_resync(running_machine &machine);
+
 	// ---- chat ----
 	//
 	// The manager owns the text and the timing; the frontend owns the
@@ -249,6 +257,10 @@ private:
 	// screen so a frozen picture has a reason attached to it.
 	static constexpr unsigned STALL_LIMIT = 3000;
 
+	static constexpr unsigned RESYNC_STUCK_ROUNDS = 10;    // ~5 s
+	static constexpr unsigned RESYNC_SILENT_ROUNDS = 20;   // ~10 s
+	static constexpr unsigned RESYNC_ETA_LIMIT = 90 * 60;  // ~90 s
+
 	static constexpr unsigned SAY_AFTER_MS = 3000;
 	static constexpr unsigned SAY_EVERY_MS = 1000;
 
@@ -290,6 +302,10 @@ private:
 	// frames are new, and only sets FLAG_REDUNDANT truthfully. Returns
 	// the frames sent.
 	unsigned send_window(frame_t newest, unsigned span, unsigned fresh);
+
+	// Tears down whichever half of a transfer this peer owns and tells the
+	// other end. Safe to call when nothing is in flight.
+	void drop_resync(u8 reason, const char *why);
 
 	// Publishes our own word for every frame after m_published up to and
 	// including `through`, repeating `word` across any gap. THE one rule
@@ -465,6 +481,22 @@ private:
 	// carrying it is a straggler from a transfer already finished with,
 	// and must not be allowed to start a new one.
 	u32                         m_resync_done_id;
+
+	// The id of a transfer abandoned - refused, cancelled, or given up
+	// on. Chunks still in flight carry it and must not re-arm a receive;
+	// without this a cancel is followed by one more full nag cycle.
+	u32                         m_resync_dead_id;
+
+	unsigned                    m_recv_best;    // fewest ever missing
+	unsigned                    m_recv_stuck;   // rounds with no gain
+	unsigned                    m_recv_last;    // want at the last sample
+	frame_t                     m_recv_frame;   // when that sample was
+	bool                        m_recv_said;    // announced to the player
+
+	// Serving progress, from the want field of each follow-up request.
+	unsigned                    m_serve_last;
+	frame_t                     m_serve_frame;
+	bool                        m_serve_said;
 
 	// Host side: snapshot every m_snap_period frames, keeping
 	// m_snap_keep of them, and push state to a guest once when the

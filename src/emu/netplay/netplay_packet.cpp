@@ -617,6 +617,8 @@ const char *nak_text(u8 reason)
 	case NAK_DISABLED:  return "savestates are off for this session";
 	case NAK_TOO_LARGE: return "this driver's state is too large";
 	case NAK_FAILED:    return "the host could not capture its state";
+	case NAK_TOO_SLOW:  return "the link is too slow for a state this large";
+	case NAK_CANCELLED: return "cancelled by a player";
 	default:            return "refused for an unknown reason";
 	}
 }

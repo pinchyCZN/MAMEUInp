@@ -320,7 +320,9 @@ enum nak_reason : u8
 {
 	NAK_DISABLED  = 0x01,      // savestates off for this session
 	NAK_TOO_LARGE = 0x02,      // over the resync size limit
-	NAK_FAILED    = 0x03       // the capture itself failed
+	NAK_FAILED    = 0x03,      // the capture itself failed
+	NAK_TOO_SLOW  = 0x04,      // the link cannot carry it in time
+	NAK_CANCELLED = 0x05       // a player cancelled it
 };
 
 const char *nak_text(u8 reason);
@@ -385,9 +387,17 @@ const char *uicmd_text(u8 cmd);
 // and 'I am missing these'. id is 0 on a first ask and the host's assigned
 // id thereafter, which stops a late chunk from an abandoned attempt being
 // mistaken for part of the current one.
+// RESERVED id VALUES, AND WHY THEY ARE IDS RATHER THAN A NEW MESSAGE.
+// The relay dispatches on an explicit whitelist of message types and
+// counts anything else as malformed WITHOUT FORWARDING IT, so a new
+// MSG_CANCEL would need the server rebuilt and redeployed. MSG_RESYNC_REQ
+// is already forwarded verbatim, so the cancel rides it as a reserved id.
+constexpr u32 RESYNC_ID_FRESH  = 0u;
+constexpr u32 RESYNC_ID_CANCEL = 0xffffffffu;
+
 struct resync_req_payload
 {
-	u32     id;                 // 0 = start a new transfer
+	u32     id;                 // 0 = new, ~0 = cancel; see above
 	u16     want;               // how many chunks the bitmap asks for
 	u16     bitmap_bytes;       // length actually carried
 	u8      bitmap[1024];       // RESYNC_BITMAP_MAX

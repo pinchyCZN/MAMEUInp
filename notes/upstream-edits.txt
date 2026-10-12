@@ -394,6 +394,14 @@ Table of Contents
    |                              | startup six times. The whole-  |
    |                              | file catch is untouched        |
    +------------------------------+--------------------------------+
+   | src/frontend/mame/ui/ui.cpp  | (cont) dismissing the confirm- |
+   |                              | quit box also cancels a state  |
+   |                              | transfer in progress, either   |
+   |                              | half. Escape twice was already |
+   |                              | an open-and-close no-op, so    |
+   |                              | the gesture was free; Enter    |
+   |                              | still quits                    |
+   +------------------------------+--------------------------------+
    | src/osd/winui/winui.h        | GetSearchColumn and the        |
    |                              | SEARCH_* enum it returns       |
    +------------------------------+--------------------------------+
