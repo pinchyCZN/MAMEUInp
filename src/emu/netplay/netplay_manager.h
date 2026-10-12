@@ -259,7 +259,7 @@ private:
 
 	static constexpr unsigned RESYNC_STUCK_ROUNDS = 10;    // ~5 s
 	static constexpr unsigned RESYNC_SILENT_ROUNDS = 20;   // ~10 s
-	static constexpr unsigned RESYNC_ETA_LIMIT = 90 * 60;  // ~90 s
+	static constexpr unsigned RESYNC_ETA_LIMIT = ((RING - 8) * 7) / 8;
 
 	static constexpr unsigned SAY_AFTER_MS = 3000;
 	static constexpr unsigned SAY_EVERY_MS = 1000;
@@ -496,6 +496,7 @@ private:
 	// Serving progress, from the want field of each follow-up request.
 	unsigned                    m_serve_last;
 	frame_t                     m_serve_frame;
+	frame_t                     m_serve_began;
 	bool                        m_serve_said;
 
 	// Host side: snapshot every m_snap_period frames, keeping

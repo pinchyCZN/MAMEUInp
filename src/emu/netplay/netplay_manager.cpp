@@ -126,6 +126,7 @@ manager::manager(running_machine &machine, player_t local, player_t players,
 	, m_recv_said(false)
 	, m_serve_last(0)
 	, m_serve_frame(0)
+	, m_serve_began(0)
 	, m_serve_said(false)
 	, m_snap_period(0)
 	, m_snap_keep(10)
@@ -1172,7 +1173,7 @@ void manager::drop_resync(u8 reason, const char *why)
 	{
 		// Tell the host to stop sending. RESERVED ID, NOT A NEW MESSAGE -
 		// the relay would drop an unknown type without forwarding it.
-		if (m_link && (reason == NAK_CANCELLED))
+		if (m_link)
 		{
 			resync_req_payload req;
 			req.id = RESYNC_ID_CANCEL;
@@ -1208,7 +1209,7 @@ void manager::drop_resync(u8 reason, const char *why)
 	m_blob.clear();
 
 	osd_printf_info("netplay: resync ended - %s\n", why);
-	m_machine.popmessage("Resync cancelled: %s", why);
+	m_machine.popmessage("Resync stopped: %s", why);
 }
 
 
@@ -1412,13 +1413,13 @@ void manager::serve_resync(const resync_req_payload &req)
 		const unsigned kbs = unsigned((u64(got) * RESYNC_CHUNK * 60)
 			/ (u64(span) * 1024));
 
-		if (eta_frames > RESYNC_ETA_LIMIT)
+		const u64 stale = u64(m_frame - m_serve_began) + eta_frames;
+		if (stale > RESYNC_ETA_LIMIT)
 		{
 			char why[96];
 			std::snprintf(why, sizeof(why),
-				"%d KB at %d KB/s needs about %d s",
-				int(m_blob.size() / 1024), int(kbs),
-				int(eta_frames / 60));
+				"%d KB at %d KB/s lands %d frames stale",
+				int(m_blob.size() / 1024), int(kbs), int(stale));
 			drop_resync(NAK_TOO_SLOW, why);
 			return;
 		}
@@ -1459,6 +1460,7 @@ void manager::do_capture()
 	m_serve_said = false;
 	m_serve_last = 0;
 	m_serve_frame = m_frame;
+	m_serve_began = m_frame;
 
 	m_send_queue.clear();
 	for (unsigned i = 0; i < m_blob.chunks(); i++)
@@ -1581,17 +1583,13 @@ void manager::apply_resync()
 		osd_printf_info("netplay: resync state for frame %u is %u frames "
 				"behind frame %u, too stale to replay\n",
 				unsigned(from), unsigned(target - from), unsigned(target));
-		m_machine.popmessage("Resync failed: the state was too old to use");
-		m_resync_wanted = false;
-		m_blob.clear();
+		drop_resync(0, "the state was too old to replay");
 		return;
 	}
 
 	if (!m_blob.restore(m_machine))
 	{
-		m_machine.popmessage("Resync failed: the state did not fit this machine");
-		m_resync_wanted = false;
-		m_blob.clear();
+		drop_resync(0, "the state did not fit this machine");
 		return;
 	}
 
