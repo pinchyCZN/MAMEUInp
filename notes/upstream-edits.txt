@@ -402,6 +402,19 @@ Table of Contents
    |                              | the gesture was free; Enter    |
    |                              | still quits                    |
    +------------------------------+--------------------------------+
+   | src/osd/winui/screenshot.cpp | (cont) LoadDIB resets filerr   |
+   |                              | per extension pass. It is      |
+   |                              | declared outside that loop, so |
+   |                              | a file that opened but failed  |
+   |                              | to decode left it at NONE, the |
+   |                              | open loop was skipped and an   |
+   |                              | empty unique_ptr was           |
+   |                              | dereferenced - one corrupt     |
+   |                              | snap crashed on a single       |
+   |                              | click. Also guards the deref   |
+   |                              | on file, and initialises       |
+   |                              | success                        |
+   +------------------------------+--------------------------------+
    | src/osd/winui/winui.h        | GetSearchColumn and the        |
    |                              | SEARCH_* enum it returns       |
    +------------------------------+--------------------------------+

@@ -522,7 +522,7 @@ static BOOL LoadDIB(const char *filename, HGLOBAL *phDIB, HPALETTE *pPal, int pi
 	}
 
 	string ext;
-	BOOL success;
+	BOOL success = false;
 	void *buffer = NULL;
 
 	for (u8 extnum = 0; extnum < 3; extnum++)
@@ -547,6 +547,8 @@ static BOOL LoadDIB(const char *filename, HGLOBAL *phDIB, HPALETTE *pPal, int pi
 		string fname;
 		buffer = 0;
 		success = false;
+
+		filerr = osd_file::error::NOT_FOUND;
 
 		// Support multiple paths
 		char* partpath = strtok(fullpath, ";");
@@ -619,7 +621,7 @@ static BOOL LoadDIB(const char *filename, HGLOBAL *phDIB, HPALETTE *pPal, int pi
 			partpath = strtok(NULL, ";");
 		}
 
-		if (filerr == osd_file::error::NONE)
+		if ((filerr == osd_file::error::NONE) && file)
 		{
 			if (extnum)
 				success = jpeg_read_bitmap_gui(*file, phDIB, pPal);
