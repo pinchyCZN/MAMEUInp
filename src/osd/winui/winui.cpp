@@ -752,6 +752,7 @@ static ResizeItem toolbar_resize_items[] =
 	{ RA_ID,   { IDC_SEARCH_MACHINE }, true, RA_LEFT | RA_TOP, NULL },
 	{ RA_ID,   { IDC_SEARCH_MANUF },   true, RA_LEFT | RA_TOP, NULL },
 	{ RA_ID,   { IDC_SEARCH_DIR },     true, RA_LEFT | RA_TOP, NULL },
+	{ RA_ID,   { IDC_SEARCH_SOURCE },  true, RA_LEFT | RA_TOP, NULL },
 	{ RA_END,  { 0 },               false, 0,                 NULL }
 };
 
@@ -2980,11 +2981,12 @@ static HWND InitToolbar(HWND hParent)
 		{
 			{ IDC_SEARCH_MACHINE, "Machine",      66 },
 			{ IDC_SEARCH_MANUF,   "Manufacturer", 92 },
-			{ IDC_SEARCH_DIR,     "Directory",    74 }
+			{ IDC_SEARCH_DIR,     "Directory",    74 },
+			{ IDC_SEARCH_SOURCE,  "Source",       62 }
 		};
 
 		int x = iPosX + 200 + 12;
-		for (int i = 0; i < 3; i++)
+		for (int i = 0; i < (int)ARRAY_LENGTH(cols); i++)
 		{
 			DWORD style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
 			if (i == 0)
@@ -3003,7 +3005,7 @@ static HWND InitToolbar(HWND hParent)
 			x += cols[i].width;
 		}
 
-		CheckRadioButton(hToolBar, IDC_SEARCH_MACHINE, IDC_SEARCH_DIR,
+		CheckRadioButton(hToolBar, IDC_SEARCH_MACHINE, IDC_SEARCH_SOURCE,
 				IDC_SEARCH_MACHINE);
 	}
 
@@ -4216,9 +4218,11 @@ static BOOL MameCommand(HWND hwnd,int id, HWND hwndCtl, UINT codeNotify)
 	case IDC_SEARCH_MACHINE:
 	case IDC_SEARCH_MANUF:
 	case IDC_SEARCH_DIR:
+	case IDC_SEARCH_SOURCE:
 		{
 			const int col = (id == IDC_SEARCH_MANUF) ? SEARCH_MANUFACTURER :
-					(id == IDC_SEARCH_DIR) ? SEARCH_DIRECTORY : SEARCH_MACHINE;
+					(id == IDC_SEARCH_DIR) ? SEARCH_DIRECTORY :
+					(id == IDC_SEARCH_SOURCE) ? SEARCH_SOURCE : SEARCH_MACHINE;
 			if (col != g_SearchColumn)
 			{
 				g_SearchColumn = col;

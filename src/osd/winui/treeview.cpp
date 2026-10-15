@@ -348,6 +348,9 @@ BOOL GameFiltered(int nGame, DWORD dwMask)
 		case SEARCH_DIRECTORY:
 			haystack = driver_list::driver(nGame).name;
 			break;
+		case SEARCH_SOURCE:
+			haystack = driver_list::driver(nGame).type.source();
+			break;
 		default:
 			haystack = driver_list::driver(nGame).type.fullname();
 			break;

@@ -366,7 +366,7 @@ Table of Contents
    |                              | live in the state directory,   |
    |                              | where LoadDIB does not look    |
    +------------------------------+--------------------------------+
-   | src/osd/winui/winui.cpp      | (cont) three radio buttons     |
+   | src/osd/winui/winui.cpp      | (cont) four radio buttons      |
    |                              | beside the toolbar search box  |
    |                              | choosing which column it       |
    |                              | filters on, their resize       |

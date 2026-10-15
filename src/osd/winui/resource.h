@@ -545,10 +545,11 @@
 #define IDC_SEARCH_MACHINE              2360
 #define IDC_SEARCH_MANUF                2361
 #define IDC_SEARCH_DIR                  2362
+#define IDC_SEARCH_SOURCE               2363
 // NETPLAY: lobby session settings column
-#define IDC_NPG_AUTOSAVE                2363
-#define IDC_NPG_STATE                   2364
-#define IDC_NPG_VIEWSAVES               2365
+#define IDC_NPG_AUTOSAVE                2364
+#define IDC_NPG_STATE                   2365
+#define IDC_NPG_VIEWSAVES               2366
 // NETPLAY: the savestate picker
 #define IDD_NETPLAY_STATES              2370
 #define IDC_NPS_LIST                    2371
