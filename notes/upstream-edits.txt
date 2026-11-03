@@ -477,9 +477,20 @@ Table of Contents
    |                              | netplay; an upstream stack     |
    |                              | overflow. See 2.1.             |
    +------------------------------+--------------------------------+
+   | README.md                    | REPLACED, not edited. The fork |
+   |                              | front page: the netplay model, |
+   |                              | the delay and batch knobs, the |
+   |                              | non-netplay fixes, and what is |
+   |                              | not done. Upstream's content   |
+   |                              | survives as the build note and |
+   |                              | the licensing links. A rebase  |
+   |                              | takes ours wholesale - there   |
+   |                              | is no hunk to re-apply         |
+   +------------------------------+--------------------------------+
 
    Each one gets a contiguous block marked NETPLAY: so it is findable
-   by grep.
+   by grep. README.md is the exception: it is a whole-file replacement,
+   so there is no block to mark.
 
 2.1.  The DRC delay-slot recursion overflow
 
