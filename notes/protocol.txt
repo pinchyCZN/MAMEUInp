@@ -1282,6 +1282,14 @@ Table of Contents
    datagram costs 8 bytes instead of 48 and cannot arrive out of step
    with the frame it describes.
 
+   [open] NOT IMPLEMENTED. build_input takes a hash pointer and its one
+   caller passes nullptr, so the flag is never set; parse_input fills
+   has_hash and hash and no caller reads them; MSG_HASH is never built.
+   The only working detection is the local per-frame log,
+   -netplay_hashlog, diffed between peers after the fact. Section 5
+   holds the remaining question, which is how often the hash should
+   travel. [verified netplay_manager.cpp, netplay_packet.cpp]
+
 3.5.  INPUT, the hot path
 
        header            12 bytes, 3.2

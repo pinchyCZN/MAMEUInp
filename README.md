@@ -45,7 +45,7 @@ parts Kaillera got wrong or never had:
 | one "connection quality" dropdown, input delay bundled behind it | delay and batch are separate, both user-visible |
 | a lost UDP datagram wedges the session | every input word is sent in several datagrams, with a retransmission request behind that |
 | peers cold-boot and hope | the host can hand its machine state to a peer mid-session |
-| a desync is silent and permanent | a per-frame state hash travels with the input stream |
+| a desync is silent and permanent | a per-frame state hash both peers can log and diff, and a save-state layout check at join |
 | a pre-filtered game list that silently omits sets you nearly have | the join button audits your set and names the file that is wrong |
 | settings mismatches become "all parties must use the same speed" | session settings travel in the handshake, so a mismatch is unrepresentable |
 | closed protocol, dead servers | plain UDP, documented byte for byte in `notes/protocol.txt`, relay builds on a small VPS in seconds |
@@ -216,19 +216,37 @@ after digital and overwrites its own mask. Analog fields gained an explicit
 forced value, honoured in `read` and in `crosshair_read`, so a remote player's
 crosshair moves too.
 
-**Desync detection comes before rollback, not after.** Without a per-frame state
-hash exchanged and compared, every later bug is invisible. A hash of every
-registered save-state entry rides as a trailer on the input stream, and two
-options exist for offline diagnosis:
+**The save-state layout is checked at join.** Not the contents - the *shape*:
+the entry count, and every registered entry's name, element size and element
+count. Two peers with different layout hashes are not running the same machine
+and no amount of input synchronisation will help them, so this is a handshake
+refusal with its own reason.
+
+**Desync detection is a diagnostic, not yet an alarm.** Each peer can log a
+per-frame fingerprint of emulated state to a file, and the two logs are diffed
+offline to find the frame where they parted:
 
 ```
 -netplay_hashlog FILE        log a per-frame hash of emulated state
 -netplay_hashinterval N      hash every Nth frame (large states)
 ```
 
-One sampled frame is not enough, and the reason is worth stating: input that
-diverges is not visible in the hash on the frame it is applied, only on the
-next, because it has not reached RAM yet. Compare runs of consecutive frames.
+This takes no snapshot. It walks `save_manager`'s registered entries and hashes
+their live bytes in place, which is why it is cheap enough to run every frame,
+and it deliberately does not call `dispatch_presave()` - those handlers have
+side effects, and detection only needs a deterministic function of machine
+state, not one that matches what a savestate would contain. The cost is that
+state living only in unsaved derived variables is invisible, so two genuinely
+divergent machines can agree for a frame or two.
+
+Which is the same reason one sampled frame is never enough: input that diverges
+is not visible in the hash on the frame it is applied, only on the next, because
+it has not reached RAM yet. Compare runs of consecutive frames, not isolated
+ones.
+
+Exchanging that hash *during* a session, so a peer finds out it has diverged
+without anybody diffing a log, is specified and reserved in the wire format but
+not implemented - see [What is not done](#what-is-not-done).
 
 
 Resync from a savestate
@@ -384,8 +402,16 @@ What is not done
 
 Stated plainly, because an honest gap is more useful than a confident guess.
 
+* **In-session desync detection.** The per-frame state hash exists and can be
+  logged on each peer and diffed offline, and the wire format reserves a flag
+  and an 8-byte trailer to carry it on the input stream - but nothing fills that
+  trailer in, the receive path parses it and ignores it, and `MSG_HASH` is never
+  sent. So a diverged session is currently found by diffing two logs after the
+  fact, not announced while it is happening. How often the hash should travel is
+  the open question: every frame costs nothing in bandwidth but hashes the whole
+  save set 60 times a second.
 * **Rollback.** The resync machinery above is the groundwork; client speculation
-  is not written.
+  is not written. It also wants the detection above as its trigger.
 * **Late join and spectators.** Structurally this is a resync where the transit
   gap is the whole session, so the pieces exist, but it is out of scope until
   lockstep is fully dialled in.
