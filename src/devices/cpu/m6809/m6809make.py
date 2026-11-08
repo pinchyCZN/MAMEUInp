@@ -16,7 +16,7 @@ def load_file(fname, lines):
 	if path != "":
 		path += '/'
 	try:
-		f = open(fname, "rU")
+		f = open(fname, "r")  # NETPLAY: "rU" mode was removed in Python 3.11; "r" already reads universal newlines
 	except Exception:
 		err = sys.exc_info()[1]
 		sys.stderr.write("Cannot read opcodes file %s [%s]\n" % (fname, err))

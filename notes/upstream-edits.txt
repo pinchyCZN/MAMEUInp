@@ -31,6 +31,7 @@ Table of Contents
       1.6. A const that was always wrong
    2. Edits: netplay and upstream bugs
       2.1. The DRC delay-slot recursion overflow
+      2.2. Linux build fixes
    3. Files we added
    4. Open questions
 
@@ -487,6 +488,27 @@ Table of Contents
    |                              | takes ours wholesale - there   |
    |                              | is no hunk to re-apply         |
    +------------------------------+--------------------------------+
+   | 3rdparty/genie/src/actions/  | max_args: "$1 $(_args)" for    |
+   | make/make_cpp.lua            | "$1$(_args)", twice. The same  |
+   | 3rdparty/genie/src/host/     | edit in the embedded copy,     |
+   | scripts.c                    | which is what genie is built   |
+   |                              | from. See 2.2                  |
+   +------------------------------+--------------------------------+
+   | 3rdparty/sol2/sol/           | the wchar_t/char16_t/char32_t  |
+   | stack_push.hpp               | array pushers call             |
+   |                              | pusher<const X*>::push instead |
+   |                              | of stack::push<const X*>. See  |
+   |                              | 2.2                            |
+   +------------------------------+--------------------------------+
+   | src/devices/cpu/m6502/       | open(..., "rU") -> "r" in the  |
+   | m6502make.py (twice),        | opcode-table generators. See   |
+   | m6809/m6809make.py,          | 2.2                            |
+   | mcs96/mcs96make.py,          |                                |
+   | tms57002/tmsmake.py          |                                |
+   +------------------------------+--------------------------------+
+   | src/lib/netlist/plib/        | #include <cstdint>. See 2.2    |
+   | pstring.h                    |                                |
+   +------------------------------+--------------------------------+
 
    Each one gets a contiguous block marked NETPLAY: so it is findable
    by grep. README.md is the exception: it is a whole-file replacement,
@@ -551,6 +573,42 @@ Table of Contents
    -drc 0 is the workaround if this ever proves insufficient.
 
    Untouched upstream as of this writing; no MAMEdev fix found.
+
+2.2.  Linux build fixes
+
+   Needed for OSD=sdl with GCC 15.2, GNU make 4.4.1 and Python 3.14.
+   None changes behaviour under MSVC or Python 3.10.
+
+   o genie archive splitting. Static libraries are archived in chunks
+     by a generated max_args macro that builds its argument list with
+     +=. GNU make 4.3 stopped adding a leading space on += to an empty
+     variable [upstream: GNU make 4.3 NEWS], so the command became
+     "ar -qc lib.afirst.o" and every archive failed. [verified]
+     scripts.c is genie's embedded copy of its Lua; the makefile
+     rebuilds genie when a host/*.c file changes, and regenerates the
+     projects when genie changes. [verified makefile GENIE_SRC]
+     scripts.c has no NETPLAY marker: it is generated, one string per
+     script.
+
+   o sol2 ambiguity. GCC 15 rejects stack::push<const wchar_t*>(L,
+     str, str + sz) with an array str as ambiguous between the two
+     stack::push overloads in stack_core.hpp. Both forward to
+     pusher<const wchar_t*>::push(L, str, str + sz), so the edit calls
+     that directly. Same for char16_t and char32_t. [verified]
+
+   o Python "rU". The CPU opcode-table generators open their .lst/.ops
+     input with mode "rU", which Python 3.11 removed; the generator
+     exits and the full build loses every m6502, m6809, mcs96 and
+     tms57002 CPU. In Python 3 "r" already translates newlines, so
+     the edit is behaviour-neutral. [verified] A failed generator can
+     leave an empty .hxx that make then treats as up to date; delete
+     zero-byte files under build/generated before rebuilding.
+     scripts/build/verinfo.py also uses "rU" but only runs for Windows
+     resource files.
+
+   o netlist pstring.h uses uint16_t/uint32_t without including
+     <cstdint>, which GCC 13+ no longer provides through <string>.
+     [verified]
 
 3.  Files we added
 

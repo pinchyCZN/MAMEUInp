@@ -539,6 +539,10 @@ namespace sol {
 			}
 		};
 
+		// NETPLAY: in the wchar_t/char16_t/char32_t array pushers, call
+		// pusher<const X*>::push directly. stack::push<const X*>(L, str, str + sz)
+		// is ambiguous under GCC 15 - both stack::push overloads match, and both
+		// forward to this same call.
 		template<size_t N>
 		struct pusher<wchar_t[N]> {
 			static int push(lua_State* L, const wchar_t(&str)[N]) {
@@ -546,7 +550,7 @@ namespace sol {
 			}
 
 			static int push(lua_State* L, const wchar_t(&str)[N], std::size_t sz) {
-				return stack::push<const wchar_t*>(L, str, str + sz);
+				return stack::pusher<const wchar_t*>::push(L, str, str + sz);
 			}
 		};
 
@@ -557,7 +561,7 @@ namespace sol {
 			}
 
 			static int push(lua_State* L, const char16_t(&str)[N], std::size_t sz) {
-				return stack::push<const char16_t*>(L, str, str + sz);
+				return stack::pusher<const char16_t*>::push(L, str, str + sz);
 			}
 		};
 
@@ -568,7 +572,7 @@ namespace sol {
 			}
 
 			static int push(lua_State* L, const char32_t(&str)[N], std::size_t sz) {
-				return stack::push<const char32_t*>(L, str, str + sz);
+				return stack::pusher<const char32_t*>::push(L, str, str + sz);
 			}
 		};
 
