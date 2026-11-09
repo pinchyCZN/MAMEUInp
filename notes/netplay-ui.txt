@@ -16,6 +16,7 @@ Table of Contents
       1.1. What this is not
    2. Where the pieces live
       2.1. The handoff from frontend to emulator
+      2.2. Without MAMEUI: the SDL build
    3. Settings: session or player
       3.1. Delay MUST match, batch need not
    4. Auditing is the join button
@@ -97,6 +98,52 @@ Table of Contents
    The consequence worth remembering: netplay configuration set for one
    launch is still set for the next one. It has to be cleared when the
    emulator returns, or the next ordinary game starts trying to netplay.
+
+2.2.  Without MAMEUI: the SDL build
+
+   tools/netplay_lobby.py is the same front end for a build with no
+   WinUI (OSD=sdl on Linux): lobby, game picker, savestate picker,
+   media picker and direct connect, the same netplay.ini, the same
+   lobby lines and the same NETPLAY_* values as NetplayApply. Run it
+   from the directory MAME should run in; tools/netplay_lobby.sh
+   starts it in run/.
+
+   +----------------------+------------------------------------------+
+   | MAMEUI does          | The SDL front end does                   |
+   +======================+==========================================+
+   | runs MAME in-process | runs it as a child process, so the       |
+   | and clears the       | variables live in the child's            |
+   | variables after      | environment and need no clearing         |
+   +----------------------+------------------------------------------+
+   | media_auditor        | -verifyroms <name>. Exit 0 is exactly    |
+   |                      | CORRECT, BEST_AVAILABLE or NONE_NEEDED,  |
+   |                      | which is audit_ok [verified clifront.cpp |
+   |                      | verifyroms, print_summary]               |
+   +----------------------+------------------------------------------+
+   | driver_list, machine | -listxml, cached under                   |
+   | config for the slot  | ~/.cache/mameui-netplay keyed by the     |
+   |                      | binary; the slot is the first <device>   |
+   |                      | with an <instance>, which listxml writes |
+   |                      | only for user-loadable images [verified  |
+   |                      | info.cpp output_images]                  |
+   +----------------------+------------------------------------------+
+   | its own options for  | -showconfig: rompath, state_directory,   |
+   | paths                | statename                                |
+   +----------------------+------------------------------------------+
+   | three picker views   | a Group clones toggle; netplaypick.ini   |
+   |                      | holds grouped, sort, reverse             |
+   +----------------------+------------------------------------------+
+   | play_options state   | -state <name> and -<slot> <path> on the  |
+   | and media            | command line                             |
+   +----------------------+------------------------------------------+
+
+   The emulator's output goes to netplay-last.log in the working
+   directory, and its tail is shown when it exits non-zero; with no
+   console attached there is nowhere else for a fatal error to go.
+
+   A media name that arrives in GAME or LAUNCH is accepted only as a
+   bare file name. netplayui.cpp media_find joins it to each ROM
+   directory unchecked, so a host can name ../ paths there. [open]
 
 3.  Settings: session or player
 

@@ -18,7 +18,7 @@ def load_opcodes(fname):
     opcodes = []
     logging.info("load_opcodes: %s", fname)
     try:
-        f = open(fname, "rU")
+        f = open(fname, "r")  # NETPLAY: "rU" mode was removed in Python 3.11; "r" already reads universal newlines
     except Exception:
         err = sys.exc_info()[1]
         logging.error("cannot read opcodes file %s [%s]", fname, err)
@@ -41,7 +41,7 @@ def load_disp(fname):
     logging.info("load_disp: %s", fname)
     states = []
     try:
-        f = open(fname, "rU")
+        f = open(fname, "r")  # NETPLAY: "rU" mode was removed in Python 3.11; "r" already reads universal newlines
     except Exception:
         err = sys.exc_info()[1]
         logging.error("cannot read display file %s [%s]", fname, err)

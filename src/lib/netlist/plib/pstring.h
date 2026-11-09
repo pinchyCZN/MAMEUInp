@@ -9,6 +9,7 @@
 
 #include "ptypes.h"
 
+#include <cstdint> // NETPLAY: GCC 13+ no longer pulls this in through <string>
 #include <cstring>
 #include <exception>
 #include <iterator>

@@ -414,6 +414,8 @@ MAMEUI/                        upstream Robbbert/mameui @ tag210, branch netplay
     gen_coinop.py              regenerate coinop.flt + coinop.lua from arcade.*
     netplay_analog.py          analog axis widths and counts, from -listxml
     netplay_wordtest.cpp       wire-format round trip, standalone, no ROM
+    netplay_lobby.py           the netplay front end for OSD=sdl builds
+    netplay_lobby.sh           starts it with run/ as the working directory
     build.bat                  THE build command - rule 12
     cap_mp.props               turns /MP off; injected by build.bat
 
@@ -500,6 +502,30 @@ rather than hours:
 make vs2017 OSD=winui TARGET=mame PTR64=1 NOWERROR=1 OPTIMIZE=0 \
      SOURCES=src/mame/drivers/cps1.cpp SUBTARGET=netplay
 ```
+
+On Linux the same narrow build, with MAME's SDL frontend (WinUI is
+Windows-only, so no lobby - netplay is driven by the `NETPLAY_*` environment
+variables):
+
+```
+make OSD=sdl SUBTARGET=netplay SOURCES=src/mame/drivers/cps1.cpp \
+     NOWERROR=1 PYTHON_EXECUTABLE=python3 -j2
+```
+
+`OSD=sdl` must be on the command line because `useroptions.mak` sets
+`OSD = winui`. `PYTHON_EXECUTABLE` is needed where there is no bare `python`.
+`-j2` is the rule 12 cap. The binary lands in
+`build/linux_gcc/bin/x64/Release/netplay64`. Needs `libsdl2-dev`,
+`libsdl2-ttf-dev`, `libfontconfig-dev`; the GCC 15 / make 4.4 fixes it relies
+on are `notes/upstream-edits.txt` 2.2.
+
+Every system instead: `SUBTARGET=mame` with no `SOURCES=`, giving `mame64`
+in the same directory, which the lobby picks over `netplay64`. About 70
+minutes at `-j2`, 2.4 GB under `build/linux_gcc`.
+
+The lobby, game picker and savestate picker for that build are
+`tools/netplay_lobby.sh`, which runs `tools/netplay_lobby.py` with `run/` as
+the working directory - `notes/netplay-ui.txt` 2.2. It needs `python3-tk`.
 
 ### Four toolchain quirks that will otherwise cost you a day
 

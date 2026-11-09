@@ -75,10 +75,13 @@
 		_p('')
 
 		if (prj.kind == "StaticLib" and prj.options.ArchiveSplit) then
+			-- NETPLAY: "$1 $(_args)", not "$1$(_args)". GNU make 4.3+ no longer
+			-- puts a leading space on += to an empty variable, so ar got the
+			-- archive and first object glued together. Mirrored in host/scripts.c.
 			_p('define max_args')
 			_p('\t$(eval _args:=)')
-			_p('\t$(foreach obj,$3,$(eval _args+=$(obj))$(if $(word $2,$(_args)),$1$(_args)$(EOL)$(eval _args:=)))')
-			_p('\t$(if $(_args),$1$(_args))')
+			_p('\t$(foreach obj,$3,$(eval _args+=$(obj))$(if $(word $2,$(_args)),$1 $(_args)$(EOL)$(eval _args:=)))')
+			_p('\t$(if $(_args),$1 $(_args))')
 			_p('endef')
 			_p('')
 			_p('define EOL')
